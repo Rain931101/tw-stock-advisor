@@ -10,6 +10,7 @@ from app.data import finmind, twse
 log = logging.getLogger(__name__)
 status = {"running": False, "done": 0, "total": 0, "message": "idle"}
 _lock = threading.Lock()
+GENERIC_INDUSTRIES = {"電子工業", "其他", "其他電子業", "大盤", "所有證券", "ETF", "Index"}
 
 
 def sync_stock_list(force: bool = False) -> int:
@@ -23,7 +24,11 @@ def sync_stock_list(force: bool = False) -> int:
         sid = r["stock_id"]
         if len(sid) != 4 or not sid.isdigit():
             continue
-        seen[sid] = (sid, r["stock_name"], r["type"], r.get("industry_category") or "其他")
+        ind = r.get("industry_category") or "其他"
+        # 同一檔可能同時列在「電子工業」等大類與細產業，保留較細的分類
+        if sid in seen and ind in GENERIC_INDUSTRIES and seen[sid][3] not in GENERIC_INDUSTRIES:
+            continue
+        seen[sid] = (sid, r["stock_name"], r["type"], ind)
     with db.tx() as c:
         c.executemany("INSERT OR REPLACE INTO stocks(stock_id,name,market,industry) VALUES (?,?,?,?)", list(seen.values()))
     db.cache_set("stock_list_synced", len(seen))
