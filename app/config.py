@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     per_trade_capital: float = 100_000  # 每筆部位資金
     max_loss_per_trade: float = 10_000  # 單筆最大可承受虧損
     fee_discount: float = 0.3  # 手續費折數（講義建議 3 折）
+    fee_monthly_rebate: bool = True  # 券商月退（元大等）：帳上以原價手續費計，折讓月底退回
 
     # 融資（槓桿）：預設值為台股常見條件，請依自己券商的信用交易條件修改
     margin_enabled: bool = True  # 有信用帳戶才開

@@ -303,3 +303,24 @@ def test_finmind_bucket_reserves_quota_for_interactive():
     t0 = tm.time()
     b.take()  # 互動查詢仍可立即進行
     assert tm.time() - t0 < 0.5
+
+
+# ---------- 成本、損益平衡點（對齊元大帳上） ----------
+def test_unrealized_matches_yuanta_0050():
+    from app.rules import costs
+
+    # 元大：0050 350 股、成本 32,274（成本均價 92.21 含手續費）、現價 92.5 → 未實現 +23、0.07%
+    u = costs.unrealized("0050", 32274, 92.5, 350)
+    assert u == {"market_value": 32375, "sell_fee": 46, "sell_tax": 32, "pnl": 23, "pnl_pct": 0.07}
+    be = costs.break_even("0050", 32274, 350)
+    assert be["tick_price"] == 92.45
+    assert costs.sell_proceeds("0050", 92.45, 350)["net"] >= 32274 > costs.sell_proceeds("0050", 92.40, 350)["net"]
+
+
+def test_costs_tax_and_min_fee():
+    from app.rules import costs
+
+    assert costs.tax_rate("2330") == 0.003 and costs.tax_rate("0050") == 0.001
+    assert costs.fee(1000, 0.3, shares=1000) == 20  # 整股最低 20 元
+    assert costs.fee(1000, 0.3, shares=10) == 1  # 零股最低 1 元
+    assert costs.buy_cost(100, 1000, 1.0) == 100_142

@@ -30,6 +30,7 @@ def risk_settings() -> dict:
         "per_trade_capital": db.get_setting("per_trade_capital", s.per_trade_capital),
         "max_loss_per_trade": db.get_setting("max_loss_per_trade", s.max_loss_per_trade),
         "fee_discount": db.get_setting("fee_discount", s.fee_discount),
+        "fee_monthly_rebate": db.get_setting("fee_monthly_rebate", s.fee_monthly_rebate),
         "min_avg_volume": db.get_setting("min_avg_volume", s.min_avg_volume),
         "min_price": db.get_setting("min_price", s.min_price),
         "margin_enabled": db.get_setting("margin_enabled", s.margin_enabled),

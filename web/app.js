@@ -140,10 +140,11 @@ function buyDialog(d) {
     <label>成交價<input name="price" type="number" step="0.01" required value="${d.price ?? ""}"></label>
     <label>股數（1 張 = 1000 股；融資須整張）<input name="shares" id="buy-shares" type="number" step="1" required value="${d.margin?.recommended ? d.margin.shares : (d.shares ?? 1000)}"></label>
     <label>買進日期<input name="buy_date" type="date" value="${new Date().toISOString().slice(0, 10)}"></label>
+    <label>券商帳上的總成本（含手續費，選填）<input name="cost" type="number" step="any" placeholder="不填則以成交價＋手續費計算"></label>
     <p>停損：${d.stop ? `<b class="down">${fmt(d.stop)}</b>　<span class="muted">${esc(d.stop_reason || "")}</span>` : `<span class="muted">由系統依目前型態計算</span>`}</p>
     <p class="muted">停損位置看的是「進場要素消失」的價位，跟你的成交價無關，由系統決定，之後收盤會依規則自動上移（只上不下）。確認後開始盤中監控，該停損、減碼、停利時推播 LINE。</p>`,
     async (v) => {
-      const r = await api("/api/positions", { method: "POST", body: { rec_id: d.rec_id || null, stock_id: v.stock_id || d.stock_id, price: +v.price, shares: +v.shares, buy_date: v.buy_date, mode: v.mode } });
+      const r = await api("/api/positions", { method: "POST", body: { rec_id: d.rec_id || null, stock_id: v.stock_id || d.stock_id, price: +v.price, shares: +v.shares, buy_date: v.buy_date, mode: v.mode, cost: v.cost ? +v.cost : null } });
       loaders.recs(); loaders.portfolio();
       if (r.warnings?.length) setTimeout(() => dialog(`<h3>已記錄買進，但請注意</h3><ul class="list">${r.warnings.map((w) => `<li class="warn">${esc(w)}</li>`).join("")}</ul><p>系統停損：<b class="down">${fmt(r.stop)}</b>　<span class="muted">${esc(r.stop_reason || "")}</span></p>`, async () => {}), 300);
       else toast(`已記錄買進，停損 ${fmt(r.stop)}，開始監控`);
@@ -193,8 +194,11 @@ loaders.portfolio = async () => {
      <div class="rec head"><div class="title"><a href="#" data-sid="${p.stock_id}">${p.stock_id} ${esc(p.name)}</a> <span class="chip">${STATUS[p.status]}</span></div>
        <div class="score">${esc(p.setup)}｜${p.buy_date}</div></div>
      <dl class="plan">
-       <dt>成本／現價</dt><dd>${fmt(p.buy_price)} → <b>${fmt(p.last)}</b>　${pct(p.pnl_pct)}　${signed(p.pnl)} 元</dd>
-       <dt>持股</dt><dd>${fmt(p.shares, 0)} 股，市值 ${fmt(p.value, 0)}　<span class="chip">${p.mode === "margin" ? "融資" : "現股"}</span></dd>
+       <dt>成本</dt><dd>${fmt(p.cost, 0)} 元（成本均價 ${fmt(p.avg_cost, 2)}）</dd>
+       <dt>現價／市值</dt><dd><b>${fmt(p.last)}</b>　市值 ${fmt(p.value, 0)}</dd>
+       <dt>未實現損益</dt><dd><b>${signed(p.pnl)} 元　${pct(p.pnl_pct)}</b><br><span class="muted">已扣預估賣出手續費 ${fmt(p.sell_fee, 0)}、證交稅 ${fmt(p.sell_tax, 0)}</span></dd>
+       <dt>損益平衡點</dt><dd><b>${fmt(p.break_even)}</b>　<span class="muted">（精確 ${fmt(p.break_even_exact, 4)}，${p.to_break_even_pct > 0 ? `還差 ${p.to_break_even_pct}%` : "已在平衡點之上"}）</span></dd>
+       <dt>持股</dt><dd>${fmt(p.shares, 0)} 股　<span class="chip">${p.mode === "margin" ? "融資" : "現股"}</span></dd>
        ${p.margin ? `<dt>融資</dt><dd>自備 ${fmt(p.margin.self_funded, 0)}／借 ${fmt(p.margin.loan, 0)} 元，已計息 ${p.margin.days} 天約 ${fmt(p.margin.interest, 0)} 元（損益已扣）</dd>
        <dt>維持率</dt><dd class="${p.margin.maintenance_ratio < 150 ? "danger" : ""}"><b>${p.margin.maintenance_ratio}%</b>　追繳價 ${fmt(p.margin.call_price)}　自有資金報酬 ${pct(p.margin.return_on_equity)}</dd>` : ""}
        <dt>停損（系統）</dt><dd><b class="down">${fmt(p.stop)}</b>（距離 ${p.to_stop_pct ?? "—"}%）<br><span class="muted">${esc(p.stop_reason || "")}</span></dd>
@@ -206,13 +210,17 @@ loaders.portfolio = async () => {
      ${(p.entry_warnings || []).map((w) => `<p class="warn">⚠️ ${esc(w)}</p>`).join("")}
      <details><summary>出場規則</summary>${exitRulesHtml(p.exit_rules)}</details>
      ${(p.stop_history || []).length > 1 ? `<details><summary>停損移動紀錄</summary><ul class="list">${p.stop_history.map((h) => `<li>${h.date}：${fmt(h.stop)}（${esc(h.reason)}）</li>`).join("")}</ul></details>` : ""}
-     <div class="btns"><button class="small" data-sell="${p.id}" data-sh="${p.shares}" data-px="${p.last}">記錄賣出／減碼</button></div>
+     <div class="btns"><button class="small" data-sell="${p.id}" data-sh="${p.shares}" data-px="${p.last}">記錄賣出／減碼</button><button class="small ghost" data-cost="${p.id}" data-cur="${p.cost}">對帳：修改成本</button></div>
    </div>`).join("") || `<p class="muted">尚無持股。到「推薦」按「我已買進」，或用上方按鈕新增。</p>`;
   const t = await api("/api/trades");
   $("#trades").innerHTML = `<table><tr><th>時間</th><th>股票</th><th>買賣</th><th class="num">價格</th><th class="num">股數</th><th>原因</th></tr>
     ${t.map((x) => `<tr><td>${x.ts.replace("T", " ")}</td><td>${x.stock_id} ${esc(x.name)}</td><td class="${x.side === "buy" ? "up" : "down"}">${x.side === "buy" ? "買進" : "賣出"}</td><td class="num">${fmt(x.price)}</td><td class="num">${fmt(x.shares, 0)}</td><td>${esc(x.reason)}</td></tr>`).join("")}</table>`;
 };
 document.addEventListener("click", (e) => {
+  const c = e.target.closest("[data-cost]");
+  if (c) dialog(`<h3>對帳：修改成本</h3><label>券商帳上的總成本（含買進手續費）<input name="cost" type="number" step="any" required value="${c.dataset.cur}"></label>
+      <p class="muted">以元大為例：庫存明細的「成本」或「付出成本」。系統會依此重算未實現損益與損益平衡點。</p>`,
+    async (v) => { await api(`/api/positions/${c.dataset.cost}/cost`, { method: "POST", body: { cost: +v.cost } }); toast("已更新成本"); loaders.portfolio(); });
   const s = e.target.closest("[data-sell]");
   if (s) dialog(`<h3>記錄賣出</h3><label>成交價<input name="price" type="number" step="0.01" required value="${s.dataset.px}"></label>
       <label>股數<input name="shares" type="number" required value="${s.dataset.sh}"></label>

@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 
 from app import db
+from app.rules import costs
 from app.rules import indicators as ind
 from app.rules import risk
 from app.rules import technical
@@ -17,8 +18,24 @@ def _pos(row: dict) -> dict:
     return row
 
 
+def book_discount(rs: dict | None = None) -> float:
+    """帳上手續費折數：月退制以原價計（與券商帳上一致），當日折讓則用設定的折數。"""
+    rs = rs or recommender.risk_settings()
+    return 1.0 if rs.get("fee_monthly_rebate", True) else rs["fee_discount"]
+
+
+def position_cost(p: dict) -> float:
+    """剩餘股數的成本。舊資料沒有 cost 欄位時以成交價＋買進手續費估算。"""
+    total = p.get("cost") or costs.buy_cost(p["buy_price"], p["shares"], book_discount())
+    return total * p["remaining"] / p["shares"] if p["shares"] else 0
+
+
+def set_cost(position_id: int, cost: float) -> None:
+    db.execute("UPDATE positions SET cost=? WHERE id=?", (cost, position_id))
+
+
 def confirm_buy(rec_id: int | None, stock_id: str, price: float, shares: int, buy_date: str | None = None,
-                mode: str = "cash") -> dict:
+                mode: str = "cash", cost: float | None = None) -> dict:
     """記錄買進（mode：cash 現股／margin 融資）。停損一律沿用系統計畫（進場要素消失的位置），不因成交價改變。"""
     if mode not in ("cash", "margin"):
         raise ValueError("交易方式只支援現股或融資")
@@ -64,8 +81,9 @@ def confirm_buy(rec_id: int | None, stock_id: str, price: float, shares: int, bu
             warnings.append("系統原本不建議這筆用融資：" + "；".join(plan["margin"].get("why_not", [])))
     plan["entry_warnings"] = warnings
     pid = db.execute(
-        "INSERT INTO positions(rec_id,stock_id,name,setup,buy_date,buy_price,shares,remaining,plan,status,mode) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (rec_id, stock_id, name, setup, buy_date or datetime.now().date().isoformat(), price, shares, shares, db.dumps(plan), "open", mode),
+        "INSERT INTO positions(rec_id,stock_id,name,setup,buy_date,buy_price,shares,remaining,plan,status,mode,cost) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (rec_id, stock_id, name, setup, buy_date or datetime.now().date().isoformat(), price, shares, shares, db.dumps(plan), "open", mode,
+         cost or costs.buy_cost(price, shares, book_discount(rs))),
     )
     db.execute("INSERT INTO trades(position_id,ts,side,price,shares,reason) VALUES (?,?,?,?,?,?)",
                (pid, db.now(), "buy", price, shares, ("融資買進｜" if mode == "margin" else "") + plan.get("setup_name", "手動建立")))
@@ -146,7 +164,8 @@ def record_sell(position_id: int, price: float, shares: int, reason: str = "手�
     if not p or p["status"] != "open":
         raise ValueError("持股不存在或已結束")
     shares = min(shares, p["remaining"])
-    pnl = (price - p["buy_price"]) * shares - price * shares * 0.003 - (price + p["buy_price"]) * shares * 0.001425 * recommender.risk_settings()["fee_discount"]
+    cost_part = position_cost(p) * shares / p["remaining"]
+    pnl = costs.sell_proceeds(p["stock_id"], price, shares, book_discount())["net"] - cost_part
     if p.get("mode") == "margin":
         mi = json.loads(p["plan"]).get("margin_info", {})
         days = max(1, (datetime.now().date() - datetime.fromisoformat(p["buy_date"]).date()).days)
@@ -234,7 +253,11 @@ def health_check() -> dict:
         plan = p["plan"]
         stop = plan.get("stop")
         value = last * p["remaining"]
-        pnl = (last - p["buy_price"]) * p["remaining"]
+        cost = position_cost(p)
+        disc = book_discount(rs)
+        un = costs.unrealized(p["stock_id"], cost, last, p["remaining"], disc)
+        pnl = un["pnl"]
+        be = costs.break_even(p["stock_id"], cost, p["remaining"], disc)
         margin = None
         if p.get("mode") == "margin":
             mi = plan.get("margin_info", {})
@@ -296,7 +319,11 @@ def health_check() -> dict:
             "id": p["id"], "stock_id": p["stock_id"], "name": p["name"], "industry": ind_name,
             "setup": plan.get("setup_name", p["setup"]), "buy_date": p["buy_date"], "buy_price": p["buy_price"],
             "shares": p["remaining"], "last": last, "value": round(value), "pnl": round(pnl),
-            "pnl_pct": round((last / p["buy_price"] - 1) * 100, 2), "stop": stop,
+            "pnl_pct": round(pnl / cost * 100, 2) if cost else None, "stop": stop,
+            "cost": round(cost), "avg_cost": round(cost / p["remaining"], 4) if p["remaining"] else None,
+            "break_even": be["tick_price"], "break_even_exact": be["exact"],
+            "sell_fee": un["sell_fee"], "sell_tax": un["sell_tax"],
+            "to_break_even_pct": round((be["tick_price"] / last - 1) * 100, 2) if be["tick_price"] else None,
             "stop_reason": plan.get("stop_reason"), "stop_history": plan.get("stop_history", []),
             "entry_warnings": plan.get("entry_warnings", []),
             "mode": p.get("mode") or "cash", "margin": margin,

@@ -67,6 +67,8 @@ def _migrate(c: sqlite3.Connection) -> None:
     cols = {r[1] for r in c.execute("PRAGMA table_info(positions)").fetchall()}
     if "mode" not in cols:
         c.execute("ALTER TABLE positions ADD COLUMN mode TEXT DEFAULT 'cash'")
+    if "cost" not in cols:  # 實際總成本（成交金額＋買進手續費），對齊券商帳上
+        c.execute("ALTER TABLE positions ADD COLUMN cost REAL")
 
 
 def reset_for_tests(path: str = ":memory:") -> None:

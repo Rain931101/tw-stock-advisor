@@ -56,6 +56,7 @@ class SettingsIn(BaseModel):
     per_trade_capital: float | None = None
     max_loss_per_trade: float | None = None
     fee_discount: float | None = None
+    fee_monthly_rebate: bool | None = None
     min_avg_volume: float | None = None
     min_price: float | None = None
     margin_enabled: bool | None = None
@@ -223,6 +224,7 @@ class BuyIn(BaseModel):
     rec_id: int | None = None
     buy_date: str | None = None
     mode: str = "cash"
+    cost: float | None = None  # 券商帳上成本（含手續費），選填
 
 
 class SellIn(BaseModel):
@@ -236,7 +238,7 @@ def buy(body: BuyIn):
     if body.shares <= 0 or body.price <= 0:
         raise HTTPException(400, "股數與價格必須大於 0")
     try:
-        return portfolio.confirm_buy(body.rec_id, body.stock_id, body.price, body.shares, body.buy_date, body.mode)
+        return portfolio.confirm_buy(body.rec_id, body.stock_id, body.price, body.shares, body.buy_date, body.mode, body.cost)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -247,6 +249,23 @@ def sell(pid: int, body: SellIn):
         return portfolio.record_sell(pid, body.price, body.shares, body.reason)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+class CostIn(BaseModel):
+    cost: float
+
+
+@app.post("/api/positions/{pid}/cost")
+def set_cost(pid: int, body: CostIn):
+    """對帳：填入券商帳上的總成本（含買進手續費）。"""
+    p = db.one("SELECT * FROM positions WHERE id=?", (pid,))
+    if not p:
+        raise HTTPException(404, "持股不存在")
+    if body.cost <= 0:
+        raise HTTPException(400, "成本必須大於 0")
+    # 使用者填的是目前剩餘股數的成本，換算回原始股數存放
+    portfolio.set_cost(pid, body.cost * p["shares"] / p["remaining"])
+    return {"ok": True}
 
 
 @app.get("/api/portfolio/health")
