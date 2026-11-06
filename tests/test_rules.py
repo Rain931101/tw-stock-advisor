@@ -401,3 +401,18 @@ def test_low_winrate_but_positive_expectancy_is_not_avoided():
     data["ret"] = np.where(data["y"] == 1, 0.08, -0.05)  # 期望 ≈ +0.85% > 0
     m = W.mine_rules(data, {"hold_days": 20, "target": 0.08, "stop": 0.05, "buy_exp": 1.0, "min_rate": 0.5, "avoid_exp": 0.0})
     assert W.assess({k: False for k in F.FEATURES}, m)["decision"] == "neutral"  # 勝率不到五成但有賺 → 不會被擋
+
+
+def test_winrate_all_csv_endpoint(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import main
+    from app.services import winrate as W
+
+    monkeypatch.setattr(main.scheduler, "start", lambda: None)
+    fake = {"trained": True, "date": "2026-11-06", "rows": [
+        {"stock_id": "5371", "name": "中光電", "industry": "光電業", "close": 100, "change_pct": 1.2, "exp": 2.43,
+         "rate": 0.6, "decision": "buy", "n_rules": 3, "rule": "均線靠攏", "rule_n": 122, "avg_volume": 5000, "liquid": True}]}
+    monkeypatch.setattr(W, "all_stocks", lambda: fake)
+    r = TestClient(main.app).get("/api/winrate/all.csv")
+    assert r.status_code == 200 and "中光電" in r.text and "推薦" in r.text and "2.43" in r.text

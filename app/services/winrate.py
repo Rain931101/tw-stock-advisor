@@ -197,20 +197,21 @@ _today_cache: dict = {}
 def today_features() -> dict[str, dict[str, bool]]:
     """最新交易日每檔股票的條件（含市場、族群），每日快取一次。"""
     last = db.one("SELECT MAX(date) AS d FROM prices")["d"]
-    hit = db.cache_get(f"winrate_today:{last}")
+    hit = db.cache_get(f"winrate_today:v2:{last}")
     if hit:
         return hit
-    from app.services.recommender import risk_settings
-    rs = risk_settings()
     panel, industry = _panel(0, 0, days=260)
     market_bull, sector_rank = F.cross_section(panel, industry)
     out = {}
+    last_ts = pd.Timestamp(last)
     for sid, g in panel.items():
+        if g.index[-1] != last_ts:  # 最新交易日沒有成交（停牌、下市、資料缺漏）就不評估，避免拿舊資料判斷
+            continue
         f = _features_for(sid, g, industry, market_bull, sector_rank)
         row = f.iloc[-1]
         if row["_valid"]:
             out[sid] = {k: bool(row[k]) for k in F.FEATURES}
-    db.cache_set(f"winrate_today:{last}", out)
+    db.cache_set(f"winrate_today:v2:{last}", out)
     return out
 
 
@@ -248,3 +249,43 @@ def assess(cond: dict[str, bool], m: dict | None = None) -> dict:
         "base_rate": m["base_rate"]["all"], "params": m["params"], "trained_at": m["trained_at"],
         "period": m["period"],
     }
+
+
+def all_stocks() -> dict:
+    """最新交易日全部個股的期望報酬與勝率（每日快取）。"""
+    m = model()
+    if not m:
+        return {"trained": False, "rows": []}
+    last = db.one("SELECT MAX(date) AS d FROM prices")["d"]
+    key = f"winrate_all:v3:{last}:{m['trained_at']}"
+    hit = db.cache_get(key)
+    if hit:
+        return hit
+    feats = today_features()
+    info = {r["stock_id"]: r for r in db.query("SELECT stock_id, name, market, industry FROM stocks")}
+    closes = {r["stock_id"]: r for r in db.query(
+        """SELECT p.stock_id, p.close, p.volume, q.close AS prev FROM prices p
+           LEFT JOIN prices q ON q.stock_id=p.stock_id AND q.date=(SELECT MAX(date) FROM prices WHERE date<?)
+           WHERE p.date=?""", (last, last))}
+    from app.services.recommender import risk_settings
+    min_vol = risk_settings()["min_avg_volume"]
+    d20 = db.query("SELECT DISTINCT date FROM prices ORDER BY date DESC LIMIT 20")
+    avgv = {r["stock_id"]: r["v"] for r in db.query(
+        "SELECT stock_id, AVG(volume) AS v FROM prices WHERE date>=? GROUP BY stock_id", (d20[-1]["date"],))}
+    rows = []
+    for sid, cond in feats.items():
+        a = assess(cond, m)
+        i, c = info.get(sid, {}), closes.get(sid, {})
+        rule = a.get("rule") or {}
+        rows.append({
+            "stock_id": sid, "name": i.get("name"), "industry": i.get("industry"), "market": i.get("market"),
+            "close": c.get("close"), "change_pct": round((c["close"] / c["prev"] - 1) * 100, 2) if c.get("prev") else None,
+            "volume": c.get("volume"), "exp": a["exp"], "rate": a["rate"], "decision": a["decision"],
+            "n_rules": a.get("n_rules", 0), "rule": " + ".join(rule.get("names", [])), "rule_n": rule.get("n"),
+            "avg_volume": round(avgv.get(sid) or 0), "liquid": (avgv.get(sid) or 0) >= min_vol,  # 訓練母體只含流動性足夠的股票
+        })
+    rows.sort(key=lambda r: (r["exp"] is None, -(r["exp"] or 0)))
+    out = {"trained": True, "date": last, "trained_at": m["trained_at"], "params": m["params"],
+           "base_exp": m.get("base_exp"), "rows": rows}
+    db.cache_set(key, out)
+    return out

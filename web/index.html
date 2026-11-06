@@ -67,6 +67,16 @@
   <!-- 勝率 -->
   <section id="tab-winrate" class="tab">
     <div class="toolbar"><button class="ghost" id="retrain">重新訓練</button><span class="muted" id="wr-status"></span></div>
+    <div class="card" id="wr-all">
+      <h3>全部個股的每筆期望報酬 <span class="muted" id="wr-all-meta"></span></h3>
+      <div class="toolbar">
+        <input id="wr-q" placeholder="搜尋代號、名稱或產業" autocomplete="off">
+        <select id="wr-filter"><option value="liquid">流動性足夠（訓練母體）</option><option value="all">全部</option><option value="buy">推薦</option><option value="neutral">中間</option><option value="avoid">不推薦</option></select>
+        <a class="ghost btnlink" href="/api/winrate/all.csv" download>下載 CSV</a>
+      </div>
+      <div class="scroll"><table id="wr-table"></table></div>
+      <div class="btns"><button class="ghost" id="wr-more">顯示更多</button></div>
+    </div>
     <div id="wr-body"></div>
   </section>
 

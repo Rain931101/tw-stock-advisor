@@ -196,6 +196,30 @@ def winrate_api(limit: int = 30):
             "total": len(rules), "worst": sorted(rules, key=lambda r: r["exp"])[:10]}
 
 
+@app.get("/api/winrate/all")
+def winrate_all():
+    return winrate.all_stocks()
+
+
+@app.get("/api/winrate/all.csv")
+def winrate_all_csv():
+    import csv
+    import io
+
+    from fastapi.responses import Response
+    d = winrate.all_stocks()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["代號", "名稱", "產業", "收盤", "漲跌%", "每筆期望報酬%", "勝率%", "判斷", "綜合組合數", "代表組合", "代表組合樣本", "20日均量(張)", "流動性足夠"])
+    label = {"buy": "推薦", "avoid": "不推薦", "neutral": "中間"}
+    for r in d.get("rows", []):
+        w.writerow([r["stock_id"], r["name"], r["industry"], r["close"], r["change_pct"], r["exp"],
+                    round(r["rate"] * 100, 1), label.get(r["decision"], ""), r["n_rules"], r["rule"], r["rule_n"],
+                    r["avg_volume"], "是" if r["liquid"] else "否"])
+    return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f"attachment; filename=expected_return_{d.get('date', '')}.csv"})
+
+
 @app.post("/api/recommendations/{rid}/dismiss")
 def dismiss(rid: int):
     db.execute("UPDATE recommendations SET status='dismissed' WHERE id=?", (rid,))

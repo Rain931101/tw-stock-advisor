@@ -102,3 +102,8 @@ button.danger-text { color: var(--danger); }
 .ratebar-legend span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .ratebar-legend span:first-child { left: 0; transform: none; }
 .ratebar-legend span:last-child { right: 0; transform: none; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--ink); }
+td.wrap { white-space: normal; min-width: 220px; font-size: 13px; }
+a.btnlink { display: inline-block; text-decoration: none; color: var(--accent); border: 1px solid var(--line); border-radius: 7px; padding: 7px 12px; font-size: 14px; }
+#wr-q { width: min(280px, 100%); }

@@ -355,6 +355,7 @@ document.addEventListener("click", (e) => { if (!e.target.closest(".toolbar")) $
 
 // ---------------- 勝率 ----------------
 loaders.winrate = async () => {
+  loadWrAll().catch(() => {});
   const w = await api("/api/winrate");
   $("#wr-status").textContent = w.status?.running ? `訓練中：${w.status.message}` : (w.trained ? `最後訓練：${w.trained_at.replace("T", " ")}` : "尚未訓練");
   if (!w.trained) { $("#wr-body").innerHTML = `<p class="muted">按「重新訓練」用歷史資料計算各條件組合的勝率（約 10 秒）。</p>`; return; }
@@ -380,6 +381,44 @@ loaders.winrate = async () => {
     <div class="card"><h3>單一條件的勝率</h3><div class="scroll"><table>${head}${w.single.map(row).join("")}</table></div></div>
     <div class="card"><h3>期望報酬最低的條件組合（避開）</h3><div class="scroll"><table>${head}${w.worst.map(row).join("")}</table></div></div>`;
 };
+// 全部個股期望報酬表
+let wrAll = [], wrSort = { key: "exp", dir: -1 }, wrLimit = 100;
+const DEC = { buy: ["推薦", "up"], neutral: ["中間", ""], avoid: ["不推薦", "down"] };
+async function loadWrAll() {
+  const d = await api("/api/winrate/all");
+  if (!d.trained) { $("#wr-all").classList.add("hidden"); return; }
+  $("#wr-all").classList.remove("hidden");
+  wrAll = d.rows;
+  const liq = wrAll.filter((r) => r.liquid);
+  $("#wr-all-meta").textContent = `｜${d.date} 收盤｜${wrAll.length} 檔（流動性足夠 ${liq.length} 檔）｜推薦 ${wrAll.filter((r) => r.decision === "buy").length}・不推薦 ${wrAll.filter((r) => r.decision === "avoid").length}`;
+  renderWrAll();
+}
+function renderWrAll() {
+  const q = $("#wr-q").value.trim(), f = $("#wr-filter").value;
+  let rows = wrAll.filter((r) => (f === "all" || (f === "liquid" ? r.liquid : r.decision === f))
+    && (!q || `${r.stock_id}${r.name}${r.industry}`.includes(q)));
+  const k = wrSort.key;
+  rows.sort((a, b) => ((a[k] ?? -1e9) > (b[k] ?? -1e9) ? 1 : (a[k] ?? -1e9) < (b[k] ?? -1e9) ? -1 : 0) * wrSort.dir);
+  const th = (key, label, num) => `<th class="${num ? "num " : ""}sortable" data-sort="${key}">${label}${wrSort.key === key ? (wrSort.dir < 0 ? " ▼" : " ▲") : ""}</th>`;
+  $("#wr-table").innerHTML = `<tr>${th("stock_id", "代號")}${th("name", "名稱")}${th("industry", "產業")}${th("close", "收盤", 1)}${th("change_pct", "漲跌", 1)}
+    ${th("exp", "每筆期望報酬", 1)}${th("rate", "勝率", 1)}${th("decision", "判斷")}<th>代表條件組合</th>${th("avg_volume", "20日均量", 1)}</tr>` +
+    rows.slice(0, wrLimit).map((r) => `<tr><td><a href="#" data-sid="${r.stock_id}">${r.stock_id}</a></td><td>${esc(r.name)}</td><td>${esc(r.industry)}</td>
+      <td class="num">${fmt(r.close)}</td><td class="num">${pct(r.change_pct)}</td>
+      <td class="num"><b class="${r.exp > 0 ? "up" : "down"}">${r.exp > 0 ? "+" : ""}${r.exp}%</b></td><td class="num">${Math.round(r.rate * 100)}%</td>
+      <td class="${DEC[r.decision][1]}">${DEC[r.decision][0]}${r.liquid ? "" : '<br><span class="muted">流動性不足</span>'}</td>
+      <td class="wrap muted">${esc(r.rule)}${r.n_rules > 1 ? `（綜合 ${r.n_rules} 組）` : ""}</td><td class="num">${fmt(r.avg_volume, 0)}</td></tr>`).join("");
+  $("#wr-more").classList.toggle("hidden", rows.length <= wrLimit);
+  $("#wr-more").textContent = `顯示更多（還有 ${Math.max(rows.length - wrLimit, 0)} 檔）`;
+}
+$("#wr-table").addEventListener("click", (e) => {
+  const h = e.target.closest("[data-sort]");
+  if (!h) return;
+  wrSort = { key: h.dataset.sort, dir: wrSort.key === h.dataset.sort ? -wrSort.dir : (["stock_id", "name", "industry"].includes(h.dataset.sort) ? 1 : -1) };
+  renderWrAll();
+});
+$("#wr-q").addEventListener("input", () => { wrLimit = 100; renderWrAll(); });
+$("#wr-filter").addEventListener("change", () => { wrLimit = 100; renderWrAll(); });
+$("#wr-more").addEventListener("click", () => { wrLimit += 200; renderWrAll(); });
 $("#retrain").addEventListener("click", async () => { await api("/api/jobs/train", { method: "POST" }); toast("開始重新訓練"); setTimeout(loaders.winrate, 1500); setTimeout(loaders.winrate, 15000); });
 
 // ---------------- 通知 ----------------
