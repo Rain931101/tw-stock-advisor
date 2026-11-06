@@ -256,3 +256,25 @@ def test_reset_settings_and_undo(monkeypatch):
     back = client.post("/api/settings/undo-reset").json()
     assert back["capital"] == 50000 and back["fee_discount"] == 0.28
     assert client.post("/api/settings/undo-reset").status_code == 404  # 只能復原一次
+
+
+def test_reset_portfolio_and_undo(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from app import main
+    from app.config import get_settings
+
+    db.reset_for_tests()
+    monkeypatch.setattr(get_settings(), "db_path", tmp_path / "advisor.db")  # 備份寫到暫存資料夾
+    monkeypatch.setattr(main.scheduler, "start", lambda: None)
+    db.execute("INSERT INTO stocks VALUES ('9997','測試','twse','半導體業')")
+    client = TestClient(main.app)
+    client.post("/api/positions", json={"stock_id": "9997", "price": 100, "shares": 1000})
+    client.post("/api/positions/1/sell", json={"price": 105, "shares": 500})
+    r = client.post("/api/portfolio/reset").json()
+    assert r["cleared"] == 1 and r["trades"] == 2 and r["can_undo"]
+    assert db.query("SELECT * FROM positions") == [] and db.query("SELECT * FROM trades") == []
+    assert (tmp_path / "backups").exists()
+    back = client.post("/api/portfolio/undo-reset").json()
+    assert back == {"restored": 1, "trades": 2}
+    assert db.one("SELECT remaining FROM positions WHERE id=1")["remaining"] == 500

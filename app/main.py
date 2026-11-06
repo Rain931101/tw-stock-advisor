@@ -258,6 +258,35 @@ def trades(limit: int = 100):
     return db.query("SELECT t.*, p.stock_id, p.name FROM trades t JOIN positions p ON p.id=t.position_id ORDER BY t.id DESC LIMIT ?", (limit,))
 
 
+@app.post("/api/portfolio/reset")
+def reset_portfolio():
+    """清空持股與交易紀錄。清空前先做資料庫備份，並保留快照可一鍵復原。"""
+    positions = db.query("SELECT * FROM positions")
+    trades_ = db.query("SELECT * FROM trades")
+    if not positions and not trades_:
+        return {"cleared": 0, "can_undo": False}
+    db.backup()
+    db.cache_set("portfolio_before_reset", {"positions": positions, "trades": trades_})
+    with db.tx() as c:
+        c.execute("DELETE FROM trades")
+        c.execute("DELETE FROM positions")
+    return {"cleared": len(positions), "trades": len(trades_), "can_undo": True}
+
+
+@app.post("/api/portfolio/undo-reset")
+def undo_reset_portfolio():
+    snap = db.cache_get("portfolio_before_reset")
+    if not snap:
+        raise HTTPException(404, "沒有可以復原的持股資料")
+    with db.tx() as c:
+        for table in ("positions", "trades"):
+            for row in snap[table]:
+                cols = ",".join(row)
+                c.execute(f"INSERT OR REPLACE INTO {table}({cols}) VALUES ({','.join('?' * len(row))})", tuple(row.values()))
+    db.execute("DELETE FROM cache WHERE key='portfolio_before_reset'")
+    return {"restored": len(snap["positions"]), "trades": len(snap["trades"])}
+
+
 # ---------------- 通知 ----------------
 @app.get("/api/alerts")
 def alerts(limit: int = 100, since_id: int = 0):

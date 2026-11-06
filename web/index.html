@@ -45,7 +45,9 @@
 
   <!-- 持股 -->
   <section id="tab-portfolio" class="tab">
-    <div class="toolbar"><button id="add-pos">＋ 新增持股（非推薦買進）</button></div>
+    <div class="toolbar"><button id="add-pos">＋ 新增持股（非推薦買進）</button>
+      <button type="button" class="ghost danger-text" id="reset-portfolio">重新設定（清空持股與交易紀錄）</button>
+      <button type="button" class="ghost hidden" id="undo-portfolio">復原清空前的持股</button></div>
     <div id="pf-summary" class="grid tiles"></div>
     <div id="pf-notes"></div>
     <div id="positions"></div>
