@@ -239,7 +239,9 @@ async function openStock(sid) {
   $("#q").value = sid;
   $("#stock-body").innerHTML = `<p class="muted">載入 ${sid}…（第一次查詢需抓財報，約 10 秒）</p>`;
   let d;
-  try { d = await api(`/api/stock/${sid}`); } catch (e) { $("#stock-body").innerHTML = `<p class="danger">${esc(e.message)}</p>`; return; }
+  try { d = await api(`/api/stock/${encodeURIComponent(sid)}`); } catch (e) { $("#stock-body").innerHTML = `<p class="danger">${esc(e.message)}</p>`; return; }
+  sid = d.info.stock_id;  // 輸入名稱時，改用實際代號
+  $("#q").value = sid;
   const q = d.quote, t = d.technical, f = d.fundamental, c = d.chips, ctx = t?.context || {};
   const isEtf = sid.startsWith("00");
   const sigs = (t?.signals || []).sort((a, b) => b.triggered - a.triggered || b.score - a.score);
@@ -266,7 +268,7 @@ async function openStock(sid) {
         ${f?.metrics ? `<p class="muted">本益比 ${f.metrics.per ?? "—"}・股價淨值比 ${f.metrics.pbr ?? "—"}・殖利率 ${f.metrics.dividend_yield ?? "—"}%</p>` : ""}</div>
     </div>
     <div class="card"><h3>法人籌碼（張）</h3>${c ? `<p>5 日：外資 ${signed(c.summary.foreign["5d"])}、投信 ${signed(c.summary.trust["5d"])}、自營 ${signed(c.summary.dealer["5d"])}　｜　20 日：外資 ${signed(c.summary.foreign["20d"])}、投信 ${signed(c.summary.trust["20d"])}</p>
-      <ul class="list">${c.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : `<p class="muted">暫無法人資料</p>`}</div>`;
+      <ul class="list">${c.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : `<p class="muted">暫無法人資料${d.chips_error ? "（資料來源額度暫時用完，稍後再查）" : ""}</p>`}</div>`;
   drawChart(d.bars, sigs.find((s) => s.triggered));
   const vb = $("#verdict-buy");
   if (vb) vb.addEventListener("click", () => {
@@ -373,7 +375,7 @@ $("#q").addEventListener("input", (e) => {
     $("#suggest").classList.toggle("hidden", !list.length);
   }, 200);
 });
-$("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") { $("#suggest").classList.add("hidden"); openStock(e.target.value.trim()); } });
+$("#q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing && e.target.value.trim()) { $("#suggest").classList.add("hidden"); openStock(e.target.value.trim()); } });
 document.addEventListener("click", (e) => { if (!e.target.closest(".toolbar")) $("#suggest").classList.add("hidden"); });
 
 // ---------------- 勝率 ----------------

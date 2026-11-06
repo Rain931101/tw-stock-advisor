@@ -1,4 +1,5 @@
 """SQLite 存取層。"""
+import math
 import json
 import sqlite3
 import threading
@@ -183,8 +184,19 @@ def dumps(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, default=_default)
 
 
+def _finite(o):
+    """NaN／Infinity 不是合法 JSON，一律轉成 None（例如財報缺值、量能為 0 的比率）。"""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _finite(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_finite(v) for v in o]
+    return o
+
+
 def jsonable(obj):
-    return json.loads(dumps(obj))
+    return _finite(json.loads(dumps(obj)))
 
 
 # ---- 備份 ----

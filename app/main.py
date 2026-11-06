@@ -238,9 +238,15 @@ def search(q: str):
 
 @app.get("/api/stock/{sid}")
 def stock(sid: str, fundamentals: bool = True):
+    sid = sid.strip()
     info = db.one("SELECT * FROM stocks WHERE stock_id=?", (sid,))
+    if not info:  # 也接受輸入股票名稱（完全相符優先，其次唯一的部分相符）
+        rows = db.query("SELECT * FROM stocks WHERE name=?", (sid,)) or db.query("SELECT * FROM stocks WHERE name LIKE ? LIMIT 2", (f"%{sid}%",))
+        if len(rows) == 1:
+            info = rows[0]
+            sid = info["stock_id"]
     if not info:
-        raise HTTPException(404, "查無此股票")
+        raise HTTPException(404, f"查無此股票：{sid}（請輸入代號，或從下拉選單選擇）")
     df = db.load_prices(sid, 420)
     out = {"info": info, "quote": None, "technical": None, "fundamental": None, "chips": None, "bars": []}
     if monitor.in_session():
@@ -271,9 +277,12 @@ def stock(sid: str, fundamentals: bool = True):
     if fundamentals:
         try:
             out["fundamental"] = company.fundamental_report(sid)
-            out["chips"] = company.chips(sid)
         except Exception as e:
             out["fundamental_error"] = str(e)
+        try:  # 籌碼抓不到（例如 FinMind 額度用完）不影響基本面與結論
+            out["chips"] = company.chips(sid)
+        except Exception as e:
+            out["chips_error"] = str(e)
     res = out.pop("_res", None)
     if res and res["context"]:
         mv = db.cache_get("market_verdict", 1)  # 一小時內的大盤判斷直接沿用，個股頁不必重算
