@@ -137,6 +137,30 @@
 
 <dialog id="dlg"><form method="dialog" id="dlg-form" class="form"></form></dialog>
 <div id="toast" class="toast hidden"></div>
+
+<button id="chat-fab" class="chat-fab" aria-label="開啟 AI 助理">💬 問 AI</button>
+<section id="chat" class="chat hidden" aria-label="AI 助理">
+  <header class="chat-head">
+    <b>AI 助理</b><span class="muted" id="chat-model"></span>
+    <button class="ghost small" id="chat-new" title="清除對話，開始新的對話">新對話</button>
+    <button class="ghost small" id="chat-close" aria-label="關閉">✕</button>
+  </header>
+  <div id="chat-log" class="chat-log">
+    <div class="chat-hello">
+      <p>可以問我系統裡的任何資料，例如：</p>
+      <div class="chat-chips">
+        <button data-ask="今天大盤狀況如何？偏多還是該防守？">今天大盤如何？</button>
+        <button data-ask="幫我健檢目前的持股，有需要停損或減碼的嗎？">健檢我的持股</button>
+        <button data-ask="2330 現在可以買嗎？還差什麼條件？">2330 可以買嗎？</button>
+        <button data-ask="目前期望報酬最高的 10 檔股票是哪些？">期望報酬前 10 名</button>
+      </div>
+    </div>
+  </div>
+  <form id="chat-form" class="chat-form">
+    <textarea id="chat-input" rows="1" placeholder="輸入問題，Enter 送出、Shift+Enter 換行" maxlength="4000"></textarea>
+    <button type="submit" id="chat-send">送出</button>
+  </form>
+</section>
 <script src="/static/app.js"></script>
 </body>
 </html>

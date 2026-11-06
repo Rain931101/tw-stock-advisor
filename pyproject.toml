@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=2.1",
     "apscheduler>=3.10,<4",
     "pydantic-settings>=2.6",
+    "anthropic>=2.6.0",
 ]
 
 [dependency-groups]

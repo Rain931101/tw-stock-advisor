@@ -543,3 +543,113 @@ setInterval(() => { if (current === "settings") loadStatus().catch(() => {}); },
 pollAlerts();
 window.addEventListener("hashchange", () => { const t = location.hash.slice(1); if (t && t !== current && loaders[t]) show(t); });
 show(location.hash.slice(1) || "market");
+
+// ---------------- AI 助理 ----------------
+const chat = { id: null, busy: false };
+try { chat.id = localStorage.getItem("chat_id"); } catch {}
+function mdInline(s) {
+  return esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+function md(src) {
+  // 精簡 Markdown：段落、標題、條列、表格、粗體、行內程式碼（先跳脫 HTML 再轉換）
+  const lines = src.split("\n"), out = [];
+  let list = null, table = null;
+  const close = () => { if (list) { out.push(`</${list}>`); list = null; } if (table) { out.push("</table></div>"); table = null; } };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^\|.*\|$/.test(line.trim())) {
+      const cells = line.trim().slice(1, -1).split("|").map((c) => c.trim());
+      if (cells.every((c) => /^:?-{2,}:?$/.test(c))) continue;
+      if (!table) { close(); out.push('<div class="scroll"><table>'); table = "head"; out.push(`<tr>${cells.map((c) => `<th>${mdInline(c)}</th>`).join("")}</tr>`); table = "body"; continue; }
+      out.push(`<tr>${cells.map((c) => `<td>${mdInline(c)}</td>`).join("")}</tr>`);
+      continue;
+    }
+    let m;
+    if ((m = line.match(/^\s*[-*•]\s+(.*)/))) { if (list !== "ul") { close(); out.push("<ul>"); list = "ul"; } out.push(`<li>${mdInline(m[1])}</li>`); continue; }
+    if ((m = line.match(/^\s*\d+[.)]\s+(.*)/))) { if (list !== "ol") { close(); out.push("<ol>"); list = "ol"; } out.push(`<li>${mdInline(m[1])}</li>`); continue; }
+    close();
+    if ((m = line.match(/^#{1,6}\s+(.*)/))) out.push(`<h4>${mdInline(m[1])}</h4>`);
+    else if (line.trim() === "---") continue;
+    else if (line.trim()) out.push(`<p>${mdInline(line)}</p>`);
+  }
+  close();
+  return out.join("");
+}
+function chatContext() {
+  const names = { market: "大盤頁", recs: "推薦頁", portfolio: "持股健檢頁", stock: "個股分析頁", winrate: "勝率頁", alerts: "通知頁", settings: "設定頁" };
+  let c = names[current] || current;
+  const sid = $("#q")?.value.trim();
+  if (current === "stock" && sid) c += `，正在看 ${sid}`;
+  return c;
+}
+function chatAdd(cls, html) {
+  const el = document.createElement("div");
+  el.className = `msg ${cls}`;
+  el.innerHTML = html;
+  $("#chat-log").appendChild(el);
+  $("#chat-log").scrollTop = $("#chat-log").scrollHeight;
+  return el;
+}
+async function chatSend(text) {
+  text = text.trim();
+  if (!text || chat.busy) return;
+  chat.busy = true; $("#chat-send").disabled = true;
+  $(".chat-hello")?.remove();
+  chatAdd("user", esc(text));
+  const box = chatAdd("ai", `<div class="tools"></div><div class="body typing"></div>`);
+  const body = box.querySelector(".body"), tools = box.querySelector(".tools");
+  let acc = "";
+  try {
+    const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text, conversation_id: chat.id, context: chatContext() }) });
+    if (!r.ok) throw new Error(await r.text());
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!chunk.startsWith("data: ")) continue;
+        const ev = JSON.parse(chunk.slice(6));
+        if (ev.type === "conv") { chat.id = ev.id; try { localStorage.setItem("chat_id", ev.id); } catch {} }
+        else if (ev.type === "text") { acc += ev.text; body.innerHTML = md(acc); }
+        else if (ev.type === "tool") { tools.insertAdjacentHTML("beforeend", `<span>🔎 ${esc(ev.label)}</span>`); if (acc) { acc += "\n\n"; } }
+        else if (ev.type === "error") chatAdd("err", esc(ev.message));
+        $("#chat-log").scrollTop = $("#chat-log").scrollHeight;
+      }
+    }
+  } catch (e) {
+    chatAdd("err", esc(`連線失敗：${e.message}`));
+  } finally {
+    body.classList.remove("typing");
+    if (!acc && !tools.children.length) box.remove();
+    chat.busy = false; $("#chat-send").disabled = false; $("#chat-input").focus();
+  }
+}
+function chatOpen(open) {
+  $("#chat").classList.toggle("hidden", !open);
+  $("#chat-fab").classList.toggle("hidden", open);
+  if (open) {
+    $("#chat-input").focus();
+    api("/api/chat/status").then((s) => {
+      $("#chat-model").textContent = s.configured ? s.model : "尚未設定 API 金鑰";
+    }).catch(() => {});
+  }
+}
+$("#chat-fab").addEventListener("click", () => chatOpen(true));
+$("#chat-close").addEventListener("click", () => chatOpen(false));
+$("#chat-new").addEventListener("click", async () => {
+  if (chat.busy) return;
+  if (chat.id) api(`/api/chat/${chat.id}/reset`, { method: "POST" }).catch(() => {});
+  chat.id = null; try { localStorage.removeItem("chat_id"); } catch {}
+  $("#chat-log").innerHTML = `<div class="msg ai"><p>已開始新的對話。</p></div>`;
+});
+$("#chat-form").addEventListener("submit", (e) => { e.preventDefault(); const t = $("#chat-input").value; $("#chat-input").value = ""; chatSend(t); });
+$("#chat-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#chat-form").requestSubmit(); }
+});
+$("#chat-input").addEventListener("input", (e) => { e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`; });
+$("#chat-log").addEventListener("click", (e) => { const b = e.target.closest("[data-ask]"); if (b) chatSend(b.dataset.ask); });

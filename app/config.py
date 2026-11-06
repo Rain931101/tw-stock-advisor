@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     min_avg_volume: int = 1000  # 20 日均量（張）
     min_price: float = 10.0
 
+    # AI 助理（Claude API）：金鑰只放 .env
+    anthropic_api_key: str = ""
+    ai_model: str = "claude-opus-5-5"
+    ai_effort: str = "medium"  # low / medium / high / xhigh / max
+
     # 盤中監控
     monitor_interval_sec: int = 60
     scheduler_enabled: bool = True

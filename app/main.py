@@ -431,6 +431,37 @@ def run_job(name: str):
     return {"started": name}
 
 
+# ---------------- AI 助理 ----------------
+class ChatIn(BaseModel):
+    message: str
+    conversation_id: str | None = None
+    context: str | None = None
+
+
+@app.get("/api/chat/status")
+def chat_status():
+    from app.services import assistant
+    s = get_settings()
+    return {"configured": assistant.configured(), "model": s.ai_model}
+
+
+@app.post("/api/chat")
+async def chat_api(body: ChatIn):
+    from fastapi.responses import StreamingResponse
+    from app.services import assistant
+    if not body.message.strip():
+        raise HTTPException(400, "請輸入問題")
+    return StreamingResponse(assistant.chat(body.conversation_id, body.message[:4000], body.context),
+                             media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/chat/{conv_id}/reset")
+def chat_reset(conv_id: str):
+    from app.services import assistant
+    assistant.reset(conv_id)
+    return {"ok": True}
+
+
 # ---------------- 網站 ----------------
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
