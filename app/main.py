@@ -428,4 +428,10 @@ app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 @app.get("/")
 def index():
-    return FileResponse(WEB / "index.html")
+    # 依 css/js 修改時間加上版本號，避免瀏覽器沿用舊版快取造成畫面格式不一致
+    from fastapi.responses import HTMLResponse
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    for name in ("style.css", "app.js"):
+        ver = int((WEB / name).stat().st_mtime)
+        html = html.replace(f"/static/{name}\"", f"/static/{name}?v={ver}\"")
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})

@@ -241,6 +241,7 @@ async function openStock(sid) {
   let d;
   try { d = await api(`/api/stock/${sid}`); } catch (e) { $("#stock-body").innerHTML = `<p class="danger">${esc(e.message)}</p>`; return; }
   const q = d.quote, t = d.technical, f = d.fundamental, c = d.chips, ctx = t?.context || {};
+  const isEtf = sid.startsWith("00");
   const sigs = (t?.signals || []).sort((a, b) => b.triggered - a.triggered || b.score - a.score);
   $("#stock-body").innerHTML = `
     <div class="grid tiles">
@@ -249,7 +250,7 @@ async function openStock(sid) {
       <div class="tile"><div class="k">位階／角度</div><div class="v" style="font-size:18px">${esc(ctx.level || "—")}</div><div>${esc(ctx.regime || "")} ${ctx.angle ?? ""}°</div></div>
       <div class="tile"><div class="k">格局</div><div class="v" style="font-size:18px">${{ uptrend: "高過高、低不過低", downtrend: "低過低、高不過高", turning_up: "高過高（可能轉多）", turning_down: "低過低（可能做頭）", range: "震盪" }[ctx.structure] || "—"}</div></div>
       <div class="tile"><div class="k">量比</div><div class="v">${ctx.volume_ratio ?? "—"}</div><div class="muted">>1 代表今日量較大</div></div>
-      <div class="tile"><div class="k">基本面</div><div class="v">${f ? `${f.grade}（${f.score}）` : "—"}</div><div class="muted">${f ? (f.pass ? "體質合格" : "未通過健檢") : esc(d.fundamental_error || "")}</div></div>
+      <div class="tile"><div class="k">基本面</div><div class="v">${isEtf ? "不適用" : f ? `${f.grade}（${f.score}）` : "—"}</div><div class="muted">${isEtf ? "ETF 不做公司健檢" : f ? (f.pass ? "體質合格" : "未通過健檢") : esc(d.fundamental_error || "資料更新中")}</div></div>
     </div>
     ${verdictHtml(d.verdict, sid)}
     <div class="card"><div id="chart"></div><p class="muted">K 線：紅漲綠跌；均線 5／20／60／240。${sigs.some((s) => s.triggered) ? "虛線為已成立型態的停損（綠）與目標（紅）。" : "目前沒有成立的進場型態，因此不畫停損與目標線。"}</p></div>
@@ -259,13 +260,13 @@ async function openStock(sid) {
           <ul class="list">${s.reasons.map((x) => `<li>✓ ${esc(x)}</li>`).join("")}${s.warnings.map((x) => `<li class="warn">! ${esc(x)}</li>`).join("")}</ul>
           ${s.triggered && s.stop ? `<p class="muted">停損 ${fmt(s.stop)}（${esc(s.stop_reason)}）　目標 ${(s.targets || []).map((x) => fmt(x.price)).join("、") || "—"}</p>` : `<p class="muted">型態未成立，沒有進場要素，因此不提供停損與目標價。</p>`}
           ${s.triggered ? `<button class="small" data-manualbuy="${sid}" data-px="${q?.price ?? ctx.close}" data-stop="${s.stop}" data-reason="${esc(s.stop_reason)}">我已買進</button>` : ""}</details>`).join("")}
-        ${ctx.wave ? `<p class="muted">波段目標價：起漲 ${fmt(ctx.wave.rally_start)} → 壓力 ${fmt(ctx.wave.resistance)}，目標 ${fmt(ctx.wave.target)}，健康回檔 ${fmt(ctx.wave.healthy_pullback)}</p>` : ""}
+        <p class="muted">${ctx.wave ? `波段目標價：起漲 ${fmt(ctx.wave.rally_start)} → 壓力 ${fmt(ctx.wave.resistance)}，目標 ${fmt(ctx.wave.target)}，健康回檔 ${fmt(ctx.wave.healthy_pullback)}` : "波段目標價：近期沒有「急漲段＋橫盤整理」可套用 1:1 等幅"}</p>
       </div>
-      <div class="card"><h3>基本面健檢（從 0 到 1 選出好公司）</h3>${f ? f.checks.map(checkHtml).join("") : "<p class='muted'>無資料</p>"}
+      <div class="card"><h3>基本面健檢（從 0 到 1 選出好公司）</h3>${isEtf ? "<p class='muted'>ETF 不做公司基本面健檢</p>" : f ? f.checks.map(checkHtml).join("") : "<p class='muted'>基本面資料尚未取得（全市場更新中）</p>"}
         ${f?.metrics ? `<p class="muted">本益比 ${f.metrics.per ?? "—"}・股價淨值比 ${f.metrics.pbr ?? "—"}・殖利率 ${f.metrics.dividend_yield ?? "—"}%</p>` : ""}</div>
     </div>
-    ${c ? `<div class="card"><h3>法人籌碼（張）</h3><p>5 日：外資 ${signed(c.summary.foreign["5d"])}、投信 ${signed(c.summary.trust["5d"])}、自營 ${signed(c.summary.dealer["5d"])}　｜　20 日：外資 ${signed(c.summary.foreign["20d"])}、投信 ${signed(c.summary.trust["20d"])}</p>
-      <ul class="list">${c.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>` : ""}`;
+    <div class="card"><h3>法人籌碼（張）</h3>${c ? `<p>5 日：外資 ${signed(c.summary.foreign["5d"])}、投信 ${signed(c.summary.trust["5d"])}、自營 ${signed(c.summary.dealer["5d"])}　｜　20 日：外資 ${signed(c.summary.foreign["20d"])}、投信 ${signed(c.summary.trust["20d"])}</p>
+      <ul class="list">${c.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : `<p class="muted">暫無法人資料</p>`}</div>`;
   drawChart(d.bars, sigs.find((s) => s.triggered));
   const vb = $("#verdict-buy");
   if (vb) vb.addEventListener("click", () => {
@@ -292,22 +293,44 @@ function winrateHtml(w) {
     ${w.matched.length > 1 ? `<details><summary>其他符合的條件組合</summary><ul class="list">${w.matched.map((r) => `<li>${esc(r.names.join(" + "))}：期望 ${r.exp > 0 ? "+" : ""}${r.exp}%、勝率 ${Math.round(r.rate * 100)}%（${r.n} 筆）</li>`).join("")}</ul></details>` : ""}
   </div>`;
 }
+function vSection(title, body) {
+  return `<div class="v-sec"><div class="v-sec-title">${title}</div>${body}</div>`;
+}
+function vList(items, cls = "") {
+  return items.length ? `<ul class="list">${items.map((x) => `<li class="${cls}">${cls === "warn" ? "! " : ""}${esc(x)}</li>`).join("")}</ul>` : `<p class="muted">無</p>`;
+}
 function verdictHtml(v, sid) {
   if (!v) return "";
   const cls = { buy: "verdict-buy", wait: "verdict-wait", avoid: "verdict-avoid" }[v.decision];
   const icon = { buy: "🟢", wait: "🟡", avoid: "⛔" }[v.decision];
   const p = v.plan;
-  return `<div class="card verdict ${cls}">
-    <div class="verdict-head"><span class="verdict-label">${icon} ${esc(v.label)}</span><span>${esc(v.summary)}</span></div>
-    ${winrateHtml(v.winrate)}
-    ${v.reasons.length ? `<ul class="list">${v.reasons.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
-    ${v.closest ? `<div class="conds"><div class="conds-title">還在等的條件 <span class="muted">｜${esc(v.closest.name)}・已符合 ${v.closest.met.length}／${v.closest.met.length + v.closest.missing.length}</span></div>
-      <div class="conds-bar"><span style="width:${Math.round(v.closest.met.length / Math.max(v.closest.met.length + v.closest.missing.length, 1) * 100)}%"></span></div>
+  const isEtf = sid.startsWith("00");
+  // 固定六段：結論 → 期望報酬 → 判斷理由 → 進場條件 → 注意事項 → 操作計畫
+  const wr = v.winrate ? winrateHtml(v.winrate)
+    : `<p class="muted">${isEtf ? "ETF 不在勝率模型範圍（模型只用個股訓練）" : "勝率模型尚未訓練，或此股資料不足以比對"}</p>`;
+  let conds;
+  if (v.closest) {
+    const total = Math.max(v.closest.met.length + v.closest.missing.length, 1);
+    conds = `<div class="conds"><div class="conds-title">${esc(v.closest.name)} <span class="muted">｜已符合 ${v.closest.met.length}／${total}</span></div>
+      <div class="conds-bar"><span style="width:${Math.round(v.closest.met.length / total * 100)}%"></span></div>
       ${v.closest.missing.map((x) => `<div class="cond todo"><span class="box"></span>${esc(x)}</div>`).join("")}
-      ${v.closest.met.map((x) => `<div class="cond done"><span class="box">✓</span>${esc(x)}</div>`).join("")}</div>` : ""}
-    ${v.cautions.length ? `<ul class="list">${v.cautions.map((x) => `<li class="warn">! ${esc(x)}</li>`).join("")}</ul>` : ""}
-    ${p && v.decision === "buy" ? `${planHtml(p)}${marginHtml(p.margin)}<details><summary>停利／停損／減碼規則</summary>${exitRulesHtml(p.exit_rules)}</details>
-      <div class="btns"><button id="verdict-buy">我已買進</button></div>` : ""}
+      ${v.closest.met.map((x) => `<div class="cond done"><span class="box">✓</span>${esc(x)}</div>`).join("")}</div>`;
+  } else if ((v.triggered || []).length) {
+    conds = `<div class="conds">${v.triggered.map((x) => `<div class="cond done"><span class="box">✓</span>已成立：${esc(x)}</div>`).join("")}</div>`;
+  } else {
+    conds = `<p class="muted">沒有任何進場型態接近成立</p>`;
+  }
+  const plan = p && v.decision === "buy"
+    ? `${planHtml(p)}${marginHtml(p.margin)}<details><summary>停利／停損／減碼規則</summary>${exitRulesHtml(p.exit_rules)}</details>
+      <div class="btns"><button id="verdict-buy">我已買進</button></div>`
+    : `<p class="muted">${v.decision === "avoid" ? "不建議買進，不提供進場、停損與目標價" : "尚未符合進場條件，條件成立後才提供進場區、停損與目標價"}</p>`;
+  return `<div class="card verdict ${cls}">
+    <div class="verdict-head"><span class="verdict-label">${icon} ${esc(v.label)}</span><span>${esc(v.summary || "—")}</span></div>
+    ${vSection("歷史期望報酬", wr)}
+    ${vSection("判斷理由", vList(v.reasons))}
+    ${vSection("進場條件", conds)}
+    ${vSection("注意事項", vList(v.cautions, "warn"))}
+    ${vSection("操作計畫", plan)}
     <p class="muted">判斷順序：歷史期望報酬（達推薦門檻直接推薦、≤ 不推門檻不推薦）→ 基本面健檢 → 位階與格局 → 進場型態 → 風控 → 大盤與籌碼。僅為規則與統計判斷，不是投資建議。</p>
   </div>`;
 }

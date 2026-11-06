@@ -383,6 +383,23 @@ def _plan_block_reason(sig: technical.Signal, price: float, rs: dict) -> str:
 
 def stock_verdict(stock: dict, tech: dict, fund: dict | None, chips: dict | None, price: float,
                   stance: str, sectors: list[dict]) -> dict:
+    """固定輸出格式：不論結論為何，都附上最接近成立的進場型態（closest）與大盤狀態。"""
+    v = _stock_verdict(stock, tech, fund, chips, price, stance, sectors)
+    sigs: list[technical.Signal] = tech.get("signals") or []
+    if v.get("closest") is None and v["decision"] != "buy":
+        cands = [s for s in sigs if not s.triggered and (s.reasons or s.missing)]
+        if cands:
+            near = max(cands, key=lambda s: len(s.reasons) / max(len(s.reasons) + len(s.missing), 1))
+            v["closest"] = {"name": near.name, "met": near.reasons, "missing": near.missing}
+    v["triggered"] = [s.name for s in sigs if s.triggered]
+    v["stance"] = stance
+    if stance == "防守" and "今日大盤判斷偏防守" not in v["cautions"]:
+        v["cautions"].append("今日大盤判斷偏防守")
+    return v
+
+
+def _stock_verdict(stock: dict, tech: dict, fund: dict | None, chips: dict | None, price: float,
+                   stance: str, sectors: list[dict]) -> dict:
     """依兩份講義給出：建議買進／觀望／不建議買進，並附理由與操作計畫。"""
     rs = risk_settings()
     ctx = tech.get("context") or {}

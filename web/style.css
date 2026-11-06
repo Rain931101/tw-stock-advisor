@@ -107,3 +107,9 @@ th.sortable:hover { color: var(--ink); }
 td.wrap { white-space: normal; min-width: 220px; font-size: 13px; }
 a.btnlink { display: inline-block; text-decoration: none; color: var(--accent); border: 1px solid var(--line); border-radius: 7px; padding: 7px 12px; font-size: 14px; }
 #wr-q { width: min(280px, 100%); }
+
+/* 個股分析結論卡：固定分段 */
+.v-sec { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line, rgba(127,127,127,.2)); }
+.v-sec-title { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+.v-sec .list { margin: 0; }
+.v-sec > p.muted { margin: 0; }
