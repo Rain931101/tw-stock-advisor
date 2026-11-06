@@ -321,14 +321,35 @@ loaders.settings = async () => {
     <tr><th>已快取基本面</th><td>${st.fundamentals_cached} 檔</td></tr>
     <tr><th>FinMind token</th><td>${st.finmind_token ? "✅ 已設定" : "⚠️ 未設定（額度較低）"}</td></tr>
     <tr><th>LINE 推播</th><td>${st.line_configured ? "✅ 已設定" : "⚠️ 未設定，請在 .env 填入 LINE_CHANNEL_ACCESS_TOKEN 與 LINE_USER_ID"}</td></tr>
-    <tr><th>盤中監控</th><td>${st.in_session ? "🟢 盤中" : "收盤"}</td></tr></table>`;
+    <tr><th>盤中監控</th><td>${st.in_session ? "🟢 盤中" : "收盤"}</td></tr>
+    <tr><th>資料庫</th><td><code>${esc(st.db_path)}</code></td></tr>
+    <tr><th>每日備份（留 7 份）</th><td>${st.backups.length ? st.backups.map((b) => `${esc(b.file)}（${b.size_mb} MB）`).join("<br>") : "尚無"}</td></tr></table>`;
 };
-$("#settings-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const body = Object.fromEntries([...new FormData(e.target)].filter(([k]) => k !== "margin_enabled").map(([k, v]) => [k, +v]));
-  body.margin_enabled = $("#settings-form [name=margin_enabled]").checked;
-  await api("/api/settings", { method: "POST", body }); toast("已儲存"); loaders.settings();
-});
+// 設定：修改後自動儲存到後端資料庫（不必按儲存，也不受瀏覽器步進值限制）
+let saveTimer, dirty = false;
+const saveState = (t, cls = "muted") => { const el = $("#save-state"); el.textContent = t; el.className = cls; };
+async function saveSettings() {
+  clearTimeout(saveTimer);
+  const f = $("#settings-form"), body = {};
+  for (const i of f.querySelectorAll("input")) {
+    if (i.type === "checkbox") body[i.name] = i.checked;
+    else if (i.value.trim() !== "") body[i.name] = Number(i.value.replace(/,/g, ""));
+  }
+  saveState("儲存中…");
+  try {
+    const r = await api("/api/settings", { method: "POST", body });
+    dirty = false;
+    saveState(`已儲存到資料庫 ✓ ${new Date().toLocaleTimeString("zh-TW", { hour12: false })}`);
+    $("#max-stop").innerHTML = `換算：進場點到停損點的距離不能超過 ${r.max_stop_pct}%，超過就不進場。` + (r.warnings || []).map((w) => `<br><span class="warn">⚠️ ${esc(w)}</span>`).join("");
+  } catch (err) {
+    let msg = err.message; try { msg = JSON.parse(msg).detail; } catch {}
+    saveState(`未儲存：${Array.isArray(msg) ? msg.map((m) => m.msg).join("；") : msg}`, "danger");
+  }
+}
+$("#settings-form").addEventListener("input", () => { dirty = true; saveState("尚未儲存…"); clearTimeout(saveTimer); saveTimer = setTimeout(saveSettings, 800); });
+$("#settings-form").addEventListener("change", () => { if (dirty) saveSettings(); });
+$("#settings-form").addEventListener("submit", (e) => { e.preventDefault(); saveSettings(); });
+window.addEventListener("beforeunload", (e) => { if (dirty) { saveSettings(); e.preventDefault(); e.returnValue = ""; } });
 $$("[data-job]").forEach((b) => b.addEventListener("click", async () => {
   const r = await api(`/api/jobs/${b.dataset.job}`, { method: "POST" });
   toast(b.dataset.job === "test_line" ? (r.ok ? "LINE 推播成功" : r.configured ? "LINE 推播失敗，請檢查 token" : "尚未設定 LINE") : "已開始執行");

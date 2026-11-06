@@ -183,3 +183,27 @@ def dumps(obj) -> str:
 
 def jsonable(obj):
     return json.loads(dumps(obj))
+
+
+# ---- 備份 ----
+def backup(keep: int = 7) -> str:
+    """用 SQLite 線上備份 API 複製一份（運作中也安全），保留最近 keep 份。"""
+    from datetime import date
+
+    src = get_settings().db_path
+    folder = src.parent / "backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    dst = folder / f"advisor-{date.today().strftime('%Y%m%d')}.db"
+    with _lock:
+        target = sqlite3.connect(dst)
+        conn().backup(target)
+        target.close()
+    for old in sorted(folder.glob("advisor-*.db"))[:-keep]:
+        old.unlink()
+    return str(dst)
+
+
+def backups() -> list[dict]:
+    folder = get_settings().db_path.parent / "backups"
+    return [{"file": p.name, "size_mb": round(p.stat().st_size / 1e6, 1)}
+            for p in sorted(folder.glob("advisor-*.db"), reverse=True)] if folder.exists() else []

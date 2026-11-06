@@ -45,6 +45,8 @@ def status():
         "finmind_token": bool(s.finmind_token),
         "in_session": monitor.in_session(),
         "fundamentals_cached": db.one("SELECT COUNT(*) AS n FROM cache WHERE key LIKE 'fundamental:%'")["n"],
+        "db_path": str(s.db_path.resolve()),
+        "backups": db.backups(),
     }
 
 
@@ -77,10 +79,34 @@ def get_settings_api():
     return rs
 
 
+SETTING_RULES = {  # 欄位: (最小, 最大, 中文名稱)
+    "capital": (1, 1e11, "帳戶資金"),
+    "per_trade_capital": (1, 1e10, "每筆部位資金"),
+    "max_loss_per_trade": (1, 1e10, "單筆最大可承受虧損"),
+    "fee_discount": (0.01, 1, "手續費折數（0.3 = 3 折）"),
+    "min_avg_volume": (0, 1e7, "20 日均量下限"),
+    "min_price": (0, 1e5, "最低股價"),
+    "margin_ratio_twse": (0, 0.9, "上市融資成數"),
+    "margin_ratio_tpex": (0, 0.9, "上櫃融資成數"),
+    "margin_rate": (0, 0.3, "融資年利率（0.065 = 6.5%）"),
+    "margin_maintenance": (1, 3, "追繳維持率（1.3 = 130%）"),
+}
+
+
 @app.post("/api/settings")
 def set_settings_api(body: SettingsIn):
-    for k, v in body.model_dump(exclude_none=True).items():
-        db.set_setting(k, v)
+    data = body.model_dump(exclude_none=True)
+    errors = []
+    for k, v in data.items():
+        if k in SETTING_RULES:
+            lo, hi, name = SETTING_RULES[k]
+            if not (lo <= v <= hi):
+                errors.append(f"{name} 必須介於 {lo:g} 到 {hi:g}")
+    if errors:
+        raise HTTPException(400, "；".join(errors))
+    with db.tx() as c:  # 一次寫入，全部成功或全部不寫
+        for k, v in data.items():
+            c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?,?)", (k, db.dumps(v)))
     return get_settings_api()
 
 
@@ -229,6 +255,7 @@ JOBS = {
     "tick": lambda: monitor.intraday_tick(force=True),
     "fundamentals": lambda: recommender.refresh_fundamentals(60),
     "close_review": lambda: monitor.close_review(),
+    "backup": lambda: db.backup(),
 }
 
 

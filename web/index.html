@@ -73,21 +73,21 @@
       <div class="card">
         <h3>資金控管</h3>
         <form id="settings-form" class="form">
-          <label>帳戶資金<input name="capital" type="number" step="1000"></label>
-          <label>每筆部位資金<input name="per_trade_capital" type="number" step="1000"></label>
-          <label>單筆最大可承受虧損<input name="max_loss_per_trade" type="number" step="500"></label>
-          <label>手續費折數<input name="fee_discount" type="number" step="0.05"></label>
-          <label>選股母體：20 日均量下限（張）<input name="min_avg_volume" type="number"></label>
-          <label>選股母體：最低股價<input name="min_price" type="number" step="1"></label>
+          <label>帳戶資金<input name="capital" type="number" step="any" inputmode="decimal"></label>
+          <label>每筆部位資金<input name="per_trade_capital" type="number" step="any" inputmode="decimal"></label>
+          <label>單筆最大可承受虧損<input name="max_loss_per_trade" type="number" step="any" inputmode="decimal"></label>
+          <label>手續費折數<input name="fee_discount" type="number" step="any" inputmode="decimal"></label>
+          <label>選股母體：20 日均量下限（張）<input name="min_avg_volume" type="number" step="any" inputmode="decimal"></label>
+          <label>選股母體：最低股價<input name="min_price" type="number" step="any" inputmode="decimal"></label>
           <p class="muted" id="max-stop"></p>
           <h3>槓桿（融資）</h3>
           <label class="row"><input name="margin_enabled" type="checkbox"> 我有信用帳戶，推薦時一併評估融資</label>
-          <label>上市融資成數（0.6 = 6 成）<input name="margin_ratio_twse" type="number" step="0.05" min="0" max="0.9"></label>
-          <label>上櫃融資成數<input name="margin_ratio_tpex" type="number" step="0.05" min="0" max="0.9"></label>
-          <label>融資年利率（0.065 = 6.5%）<input name="margin_rate" type="number" step="0.001"></label>
-          <label>追繳維持率（1.3 = 130%）<input name="margin_maintenance" type="number" step="0.01"></label>
+          <label>上市融資成數（0.6 = 6 成）<input name="margin_ratio_twse" type="number" step="any" inputmode="decimal"></label>
+          <label>上櫃融資成數<input name="margin_ratio_tpex" type="number" step="any" inputmode="decimal"></label>
+          <label>融資年利率（0.065 = 6.5%）<input name="margin_rate" type="number" step="any" inputmode="decimal"></label>
+          <label>追繳維持率（1.3 = 130%）<input name="margin_maintenance" type="number" step="any" inputmode="decimal"></label>
           <p class="muted">預設為台股常見條件，請依自己券商的信用交易契約修改。</p>
-          <button>儲存</button>
+          <div class="btns"><button>儲存</button><span id="save-state" class="muted"></span></div>
         </form>
       </div>
       <div class="card">
@@ -98,6 +98,7 @@
           <button class="ghost" data-job="fundamentals">更新基本面</button>
           <button class="ghost" data-job="tick">立即跑一次盤中監控</button>
           <button class="ghost" data-job="test_line">測試 LINE 推播</button>
+          <button class="ghost" data-job="backup">立即備份資料庫</button>
         </div>
       </div>
     </div>

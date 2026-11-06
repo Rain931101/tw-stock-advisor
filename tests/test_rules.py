@@ -222,3 +222,21 @@ def test_margin_position_interest_and_maintenance():
 def test_max_loss_above_position_size_does_not_block_everything():
     s = risk.size_position(entry=163.5, stop=154, per_trade_capital=5_000, max_loss=10_000)
     assert s.ok and s.max_entry > 154 and s.shares > 0
+
+
+# ---------- 設定存進資料庫 ----------
+def test_settings_persist_any_value_and_reject_invalid(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    db.reset_for_tests()
+    monkeypatch.setattr(main.scheduler, "start", lambda: None)
+    client = TestClient(main.app)
+    r = client.post("/api/settings", json={"capital": 123456, "fee_discount": 0.28, "max_loss_per_trade": 1234})
+    assert r.status_code == 200
+    got = client.get("/api/settings").json()  # 模擬重新整理
+    assert got["capital"] == 123456 and got["fee_discount"] == 0.28 and got["max_loss_per_trade"] == 1234
+    bad = client.post("/api/settings", json={"fee_discount": 3, "capital": 999})
+    assert bad.status_code == 400 and "手續費折數" in bad.json()["detail"]
+    assert client.get("/api/settings").json()["capital"] == 123456  # 有錯就整批不寫

@@ -1,9 +1,11 @@
 """排程（台北時間）。"""
 import logging
 import threading
+from datetime import date
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app import db
 from app.config import get_settings
 from app.services import monitor, recommender, sync
 
@@ -53,7 +55,10 @@ def start() -> None:
     _sched.add_job(_safe(evening_scan), "cron", day_of_week="mon-fri", hour=21, minute=30, id="evening_scan")
     _sched.add_job(_safe(recommender.refresh_fundamentals, 120), "cron", hour=22, minute=30, id="fund_daily")
     _sched.add_job(_safe(recommender.refresh_fundamentals, 500), "cron", day_of_week="sat", hour=9, id="fund_weekly")
+    _sched.add_job(_safe(db.backup), "cron", hour=23, minute=50, id="backup")
     _sched.start()
+    if not any(b["file"].endswith(f"{date.today():%Y%m%d}.db") for b in db.backups()):
+        threading.Thread(target=_safe(db.backup), daemon=True).start()
     threading.Thread(target=_safe(sync.backfill), daemon=True).start()
 
 
