@@ -15,6 +15,7 @@
     <button data-tab="recs">推薦</button>
     <button data-tab="portfolio">持股健檢</button>
     <button data-tab="stock">個股分析</button>
+    <button data-tab="winrate">勝率</button>
     <button data-tab="alerts">通知 <span id="badge" class="badge hidden">0</span></button>
     <button data-tab="settings">設定</button>
   </nav>
@@ -63,6 +64,12 @@
     <div id="stock-body"><p class="muted">輸入股票代號查看技術面型態、基本面健檢與法人籌碼。</p></div>
   </section>
 
+  <!-- 勝率 -->
+  <section id="tab-winrate" class="tab">
+    <div class="toolbar"><button class="ghost" id="retrain">重新訓練</button><span class="muted" id="wr-status"></span></div>
+    <div id="wr-body"></div>
+  </section>
+
   <!-- 通知 -->
   <section id="tab-alerts" class="tab">
     <div class="toolbar"><button class="ghost" id="mark-read">全部標為已讀</button><button class="ghost" id="ask-notify">開啟瀏覽器通知</button></div>
@@ -90,6 +97,13 @@
           <label>融資年利率（0.065 = 6.5%）<input name="margin_rate" type="number" step="any" inputmode="decimal"></label>
           <label>追繳維持率（1.3 = 130%）<input name="margin_maintenance" type="number" step="any" inputmode="decimal"></label>
           <p class="muted">預設為台股常見條件，請依自己券商的信用交易契約修改。</p>
+          <h3>歷史勝率</h3>
+          <label>推薦買進：勝率 ≥（0.8 = 80%）<input name="winrate_buy" type="number" step="any" inputmode="decimal"></label>
+          <label>不推薦：勝率 <（0.5 = 50%）<input name="winrate_avoid" type="number" step="any" inputmode="decimal"></label>
+          <label>勝率定義：停利（0.08 = +8%）<input name="winrate_target" type="number" step="any" inputmode="decimal"></label>
+          <label>勝率定義：停損（0.05 = −5%）<input name="winrate_stop" type="number" step="any" inputmode="decimal"></label>
+          <label>勝率定義：最長持有交易日<input name="winrate_hold" type="number" step="any" inputmode="decimal"></label>
+          <p class="muted">修改後會自動重新訓練（約 10 秒）。停利越小、停損越大，勝率越高但期望報酬越低。</p>
           <div class="btns"><button>儲存</button><button type="button" class="ghost danger-text" id="reset-settings">重新設定（恢復預設值）</button><button type="button" class="ghost hidden" id="undo-reset">復原上次的設定</button><span id="save-state" class="muted"></span></div>
         </form>
       </div>

@@ -254,8 +254,36 @@ def daily_scan(fetch_fundamentals: bool = True, max_fundamental_fetch: int = 60)
         except Exception:
             chips = None
         plan = build_plan(st, sig, ctx, fund, chips, sectors, stance, rs, ctx["close"])
+        wr = winrate_for(st["stock_id"])
+        if plan and wr and wr.get("trained") and wr["decision"] == "avoid":
+            continue  # 歷史勝率低於不推門檻
+        if plan and wr and wr.get("trained"):
+            plan["winrate"] = {"rate": wr["rate"], "exp": wr["exp"]}
+            plan["reasons"].append(f"歷史勝率 {wr['rate']:.0%}、每筆期望報酬 {wr['exp']:+.2f}%")
         if plan and save_recommendation(plan, trade_date, intraday=False):
             saved += 1
+    # 勝率規則推薦：不必符合講義型態，只要歷史勝率達到買進門檻
+    try:
+        from app.services import winrate
+        m = winrate.model()
+        if m:
+            feats = winrate.today_features()
+            by_id = {u["stock_id"]: u for u in uni}
+            for sid, cond in feats.items():
+                if sid not in by_id:
+                    continue
+                wr = winrate.assess(cond, m)
+                if wr["decision"] != "buy":
+                    continue
+                fund = db.cache_get(f"fundamental:{sid}")
+                if fund and fund.get("fatal"):
+                    continue
+                price = float(groups[sid]["close"].iloc[-1]) if sid in groups else None
+                plan = price and winrate_plan(by_id[sid], wr, price, fund, db.cache_get(f"chips:{sid}:20"), rs)
+                if plan and save_recommendation(plan, trade_date, intraday=False):
+                    saved += 1
+    except Exception as e:
+        log.warning("winrate scan failed: %s", e)
     db.cache_set("watchlist", watch[:300])
     expire_old()
     notifier.flush()
@@ -415,3 +443,79 @@ def stock_verdict(stock: dict, tech: dict, fund: dict | None, chips: dict | None
     if stance == "防守":
         out["cautions"].append("今日大盤判斷偏防守")
     return out
+
+
+
+# ======================= 歷史勝率 =======================
+def winrate_for(stock_id: str) -> dict | None:
+    from app.services import winrate
+    m = winrate.model()
+    if not m:
+        return None
+    cond = winrate.today_features().get(stock_id)
+    if cond is None:
+        return None
+    return winrate.assess(cond, m)
+
+
+def winrate_plan(stock: dict, wr: dict, price: float, fund: dict | None, chips: dict | None, rs: dict) -> dict | None:
+    """勝率規則的操作計畫：停利、停損、持有天數與訓練時的交易定義完全相同。"""
+    p = wr["params"]
+    stop = risk.round_tick(price * (1 - p["stop"]))
+    target = risk.round_tick(price * (1 + p["target"]))
+    sizing = risk.size_position(price, stop, rs["per_trade_capital"], rs["max_loss_per_trade"], rs["fee_discount"])
+    if not sizing.ok:
+        return None
+    rule = wr["rule"]
+    return {
+        "stock_id": stock["stock_id"], "name": stock.get("name"), "industry": stock.get("industry"), "market": stock.get("market"),
+        "setup": "winrate", "setup_name": "歷史勝率規則：" + " + ".join(rule["names"]),
+        "score": round(rule["rate"] * 100, 1), "price": price, "reward_risk": round(p["target"] / p["stop"], 2),
+        "entry_low": risk.round_tick(price * 0.99), "entry_high": risk.round_tick(price * 1.01),
+        "stop": stop, "stop_reason": f"訓練時的停損：進場價 −{p['stop']:.0%}",
+        "targets": [{"price": target, "label": f"停利 +{p['target']:.0%}"}], "healthy_pullback": None,
+        "exit_rules": [
+            {"type": "price_below", "level": stop, "action": "sell_all", "label": f"跌破停損（−{p['stop']:.0%}）"},
+            {"type": "target", "level": target, "action": "sell_all", "label": f"達到停利（+{p['target']:.0%}）"},
+            {"type": "time_exit", "days": p["hold_days"], "action": "sell_all", "label": f"持有滿 {p['hold_days']} 個交易日出場"},
+        ],
+        "reasons": [f"歷史勝率 {rule['rate']:.0%}（訓練 {rule['train_rate']:.0%}／驗證 {rule['test_rate']:.0%}，{rule['n']} 筆）",
+                    f"每筆期望報酬 {rule['exp']:+.2f}%"] + [f"符合：{n}" for n in rule["names"]],
+        "warnings": ["勝率規則是統計結果，樣本只有約一年，未來不保證相同"],
+        "tags": ["勝率規則"], "sizing": sizing.to_dict(), "context": None,
+        "margin": margin_option(stock, "winrate", price, stop, fund, "中性", sizing.shares, rs),
+        "fundamental": None if not fund else {"score": fund["score"], "grade": fund["grade"], "metrics": fund.get("metrics", {}),
+                                             "highlights": [c for c in fund.get("checks", []) if c["status"] in ("good", "bad", "warn")][:8]},
+        "chips": None if not chips else {"summary": chips["summary"], "notes": chips["notes"]},
+        "winrate": {k: wr[k] for k in ("rate", "exp")},
+    }
+
+
+def apply_winrate(verdict: dict, wr: dict | None, stock: dict, price: float, fund: dict | None, chips: dict | None) -> dict:
+    """使用者規則：歷史勝率 ≥ 買進門檻 → 推薦買進（不必所有型態條件都符合）；< 不推門檻 → 不推薦。"""
+    if not wr or not wr.get("trained"):
+        verdict["winrate"] = None
+        return verdict
+    p = wr["params"]
+    verdict["winrate"] = {
+        "rate": wr["rate"], "exp": wr["exp"], "decision": wr["decision"], "rule": wr["rule"],
+        "matched": wr["matched"], "true_conds": wr["true_conds"], "base_rate": wr["base_rate"],
+        "params": p, "trained_at": wr["trained_at"],
+    }
+    fatal = bool(fund and fund.get("fatal"))
+    if wr["decision"] == "buy" and not fatal:
+        plan = verdict.get("plan") if verdict["decision"] == "buy" else None
+        if plan is None:
+            plan = winrate_plan(stock, wr, price, fund, chips, risk_settings())
+        if plan:
+            day = datetime.now().date().isoformat()
+            save_recommendation(plan, day, intraday=False, notify=False)
+            row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, plan["stock_id"], plan["setup"]))
+            verdict.update(decision="buy", label="建議買進", plan=plan, rec_id=row["id"] if row else None,
+                           summary=f"歷史勝率 {wr['rate']:.0%} ≥ {p['buy_rate']:.0%}：" + " + ".join(wr["rule"]["names"]))
+            if fund and not fund.get("pass"):
+                verdict["cautions"].append(f"基本面健檢未通過（{fund['grade']}）：依你的規則仍以勝率為準，請自行評估")
+    elif wr["decision"] == "avoid":
+        verdict.update(decision="avoid", label="不建議買進", plan=None,
+                       summary=f"歷史勝率 {wr['rate']:.0%}，低於 {p['avoid_rate']:.0%}，不推薦")
+    return verdict

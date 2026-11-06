@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.data import twse
 from app.rules import indicators as ind
 from app.rules import technical
-from app.services import company, market, monitor, notifier, portfolio, recommender, sync
+from app.services import company, market, monitor, notifier, portfolio, recommender, sync, winrate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -64,6 +64,11 @@ class SettingsIn(BaseModel):
     margin_ratio_tpex: float | None = None
     margin_rate: float | None = None
     margin_maintenance: float | None = None
+    winrate_buy: float | None = None
+    winrate_avoid: float | None = None
+    winrate_target: float | None = None
+    winrate_stop: float | None = None
+    winrate_hold: float | None = None
 
 
 @app.get("/api/settings")
@@ -71,6 +76,9 @@ def get_settings_api():
     rs = recommender.risk_settings()
     from app.rules.risk import max_stop_pct
     rs["max_stop_pct"] = round(max_stop_pct(rs["per_trade_capital"], rs["max_loss_per_trade"]) * 100, 2)
+    wp = winrate.params()
+    rs.update(winrate_buy=wp["buy_rate"], winrate_avoid=wp["avoid_rate"], winrate_target=wp["target"],
+              winrate_stop=wp["stop"], winrate_hold=wp["hold_days"])
     rs["warnings"] = []
     if rs["max_loss_per_trade"] >= rs["per_trade_capital"]:
         rs["warnings"].append("單筆最大虧損 ≥ 每筆部位資金：等於不設虧損上限。講義範例是部位 10 萬、最大虧損 1 萬（10%）")
@@ -92,7 +100,13 @@ SETTING_RULES = {  # 欄位: (最小, 最大, 中文名稱)
     "margin_ratio_tpex": (0, 0.9, "上櫃融資成數"),
     "margin_rate": (0, 0.3, "融資年利率（0.065 = 6.5%）"),
     "margin_maintenance": (1, 3, "追繳維持率（1.3 = 130%）"),
+    "winrate_buy": (0.3, 1, "推薦買進的勝率門檻（0.8 = 80%）"),
+    "winrate_avoid": (0, 0.9, "不推薦的勝率門檻（0.5 = 50%）"),
+    "winrate_target": (0.01, 0.5, "勝率定義：停利（0.08 = +8%）"),
+    "winrate_stop": (0.01, 0.3, "勝率定義：停損（0.05 = −5%）"),
+    "winrate_hold": (3, 120, "勝率定義：最長持有交易日"),
 }
+WINRATE_DEFINITION_KEYS = {"winrate_target", "winrate_stop", "winrate_hold", "winrate_buy", "winrate_avoid"}
 
 
 @app.post("/api/settings")
@@ -106,9 +120,12 @@ def set_settings_api(body: SettingsIn):
                 errors.append(f"{name} 必須介於 {lo:g} 到 {hi:g}")
     if errors:
         raise HTTPException(400, "；".join(errors))
+    changed = {k for k, v in data.items() if k in WINRATE_DEFINITION_KEYS and db.get_setting(k) != v}
     with db.tx() as c:  # 一次寫入，全部成功或全部不寫
         for k, v in data.items():
             c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?,?)", (k, db.dumps(v)))
+    if changed:  # 勝率定義或門檻改了 → 背景重新訓練
+        threading.Thread(target=winrate.train, daemon=True).start()
     return get_settings_api()
 
 
@@ -161,6 +178,19 @@ def recs(status: str = "active", limit: int = 50):
     for r in rows:
         r["plan"] = json.loads(r["plan"])
     return rows
+
+
+@app.get("/api/winrate")
+def winrate_api(limit: int = 30):
+    m = winrate.model()
+    if not m:
+        return {"trained": False, "status": winrate.status}
+    rules = m["rules"]
+    return {"trained": True, "status": winrate.status, "trained_at": m["trained_at"], "params": m["params"],
+            "period": m["period"], "samples": m["samples"], "base_rate": m["base_rate"], "base_exp": m.get("base_exp"),
+            "best": m.get("best"), "single": m["single"],
+            "top": rules[:limit], "buy_rules": [r for r in rules if r["reliable_buy"]][:limit],
+            "worst": sorted(rules, key=lambda r: r["rate"])[:10]}
 
 
 @app.post("/api/recommendations/{rid}/dismiss")
@@ -228,6 +258,12 @@ def stock(sid: str, fundamentals: bool = True):
         price = (out["quote"] or {}).get("price") or res["context"]["close"]
         fund = out["fundamental"] if not sid.startswith("00") else None
         out["verdict"] = recommender.stock_verdict(info, res, fund, out["chips"], price, stance, sectors)
+        try:
+            wr = recommender.winrate_for(sid)
+        except Exception as e:
+            logging.getLogger(__name__).warning("winrate %s: %s", sid, e)
+            wr = None
+        out["verdict"] = recommender.apply_winrate(out["verdict"], wr, info, price, fund, out["chips"])
     return db.jsonable(out)
 
 
@@ -342,6 +378,7 @@ JOBS = {
     "fundamentals": lambda: recommender.refresh_all_fundamentals(),
     "close_review": lambda: monitor.close_review(),
     "backup": lambda: db.backup(),
+    "train": lambda: winrate.train(),
 }
 
 

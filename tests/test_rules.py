@@ -351,3 +351,37 @@ def test_stock_verdict_avoids_bad_fundamentals_and_waits_without_setup():
     assert v["decision"] in ("wait", "avoid")
     if v["decision"] == "wait" and v["closest"]:
         assert v["closest"]["missing"]  # 告訴使用者還差哪些條件
+
+
+# ---------- 歷史勝率 ----------
+def test_label_trades_target_stop_and_expiry():
+    from app.services import winrate as W
+
+    up = make_df(np.linspace(100, 130, 40))  # 一路漲 → 先到停利
+    lab = W.label_trades(up, hold=20, target=0.08, stop=0.05)
+    assert lab["y"].iloc[0] == 1 and lab["ret"].iloc[0] > 0.07
+    down = make_df(np.linspace(100, 70, 40))  # 一路跌 → 先到停損
+    lab = W.label_trades(down, hold=20, target=0.08, stop=0.05)
+    assert lab["y"].iloc[0] == 0 and lab["ret"].iloc[0] < -0.05
+    assert lab["y"].iloc[-1] != lab["y"].iloc[-1]  # 最後幾天未來資料不足 → NaN
+
+
+def test_mine_rules_requires_both_periods_and_assess():
+    from app.rules import features as F
+    from app.services import winrate as W
+
+    rng = np.random.default_rng(0)
+    n = 6000
+    dates = pd.to_datetime("2026-01-01") + pd.to_timedelta(rng.integers(0, 200, n), unit="D")
+    data = pd.DataFrame({k: rng.random(n) < 0.3 for k in F.FEATURES})
+    data["date"], data["sid"] = dates, rng.integers(0, 300, n).astype(str)
+    good = data["high_60"] & data["vol_up"]
+    data["y"] = np.where(good, rng.random(n) < 0.9, rng.random(n) < 0.4).astype(float)
+    data["ret"] = np.where(data["y"] == 1, 0.08, -0.05)
+    p = {"hold_days": 20, "target": 0.08, "stop": 0.05, "buy_rate": 0.8, "avoid_rate": 0.5}
+    m = W.mine_rules(data, p)
+    buy = [r for r in m["rules"] if r["reliable_buy"]]
+    assert buy and all({"high_60", "vol_up"} <= set(r["conds"]) for r in buy)
+    cond = {k: False for k in F.FEATURES} | {"high_60": True, "vol_up": True}
+    assert W.assess(cond, m)["decision"] == "buy"
+    assert W.assess({k: False for k in F.FEATURES}, m)["decision"] == "avoid"  # 平均 40% < 50%

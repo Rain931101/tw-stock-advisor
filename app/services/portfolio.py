@@ -223,10 +223,16 @@ def evaluate_exits(pos: dict, df: pd.DataFrame, now: datetime | None, intraday: 
                     hits.append({**rule, "action": "target_hit"})
                 if rule["action"] == "sell_half" and not state.get("half_sold_alerted"):
                     hits.append(rule)
+                if rule["action"] == "sell_all":
+                    hits.append(rule)
             if state.get("target_hit") and rule["action"] == "watch_pullback":
                 # 目標價滿足後，盤中自高點壓回 2% 以上 = 弱勢，可提前出場
                 if price <= state["high_since_entry"] * 0.98:
                     hits.append({**rule, "action": "sell_half", "label": "目標價滿足後盤中壓回轉弱，先減碼或出場"})
+        elif typ == "time_exit" and not intraday:
+            held = int((d.index > pd.Timestamp(pos["buy_date"])).sum())
+            if held >= rule.get("days", 20):
+                hits.append(rule)
         elif typ == "stall_ma" and not intraday:
             ma = r.get(f"ma{rule['ma']}")
             n = rule.get("days", 5)

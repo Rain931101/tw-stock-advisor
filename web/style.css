@@ -82,3 +82,23 @@ button.danger-text { color: var(--danger); }
 .verdict-label { font-size: 20px; font-weight: 700; white-space: nowrap; }
 .verdict-buy .verdict-label { color: var(--up); }
 .verdict-wait .verdict-label { color: var(--warn); }
+.conds { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.conds-title { font-weight: 600; margin-bottom: 6px; }
+.conds-bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+.conds-bar span { display: block; height: 100%; background: var(--warn); }
+.cond { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 14px; }
+.cond .box { flex: none; width: 20px; height: 20px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; }
+.cond.todo .box { border: 2px solid var(--warn); }
+.cond.todo { color: var(--ink); font-weight: 500; }
+.cond.done .box { background: var(--down); color: #fff; border: 2px solid var(--down); }
+.cond.done { color: var(--muted); }
+.wr { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.wr-head { display: flex; align-items: baseline; gap: 10px; }
+.wr-rate { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.ratebar { position: relative; height: 10px; background: var(--line); border-radius: 5px; margin: 8px 0 2px; overflow: visible; }
+.ratebar .fill { display: block; height: 100%; border-radius: 5px; }
+.ratebar .mark { position: absolute; top: -3px; width: 2px; height: 16px; background: var(--ink); opacity: .55; }
+.ratebar-legend { position: relative; height: 16px; font-size: 11px; color: var(--muted); }
+.ratebar-legend span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.ratebar-legend span:first-child { left: 0; transform: none; }
+.ratebar-legend span:last-child { right: 0; transform: none; }
