@@ -6,6 +6,7 @@ import pandas as pd
 
 from app import db
 from app.rules import indicators as ind
+from app.rules import risk
 from app.rules import technical
 from app.services import recommender
 
@@ -16,8 +17,13 @@ def _pos(row: dict) -> dict:
     return row
 
 
-def confirm_buy(rec_id: int | None, stock_id: str, price: float, shares: int, buy_date: str | None = None) -> dict:
-    """記錄買進。停損一律沿用系統計畫（進場要素消失的位置），不因成交價改變。"""
+def confirm_buy(rec_id: int | None, stock_id: str, price: float, shares: int, buy_date: str | None = None,
+                mode: str = "cash") -> dict:
+    """記錄買進（mode：cash 現股／margin 融資）。停損一律沿用系統計畫（進場要素消失的位置），不因成交價改變。"""
+    if mode not in ("cash", "margin"):
+        raise ValueError("交易方式只支援現股或融資")
+    if mode == "margin" and shares % 1000:
+        raise ValueError("融資必須以整張（1000 股）買進")
     plan, name, setup = {}, None, "manual"
     if rec_id:
         rec = db.one("SELECT * FROM recommendations WHERE id=?", (rec_id,))
@@ -45,14 +51,25 @@ def confirm_buy(rec_id: int | None, stock_id: str, price: float, shares: int, bu
         if loss > rs["max_loss_per_trade"]:
             warnings.append(f"以成交價 {price}、{shares:,} 股計，打到停損 {stop} 約虧 {loss:,.0f} 元，"
                             f"超過單筆可承受虧損 {rs['max_loss_per_trade']:,.0f} 元，建議減少股數")
+    if mode == "margin":
+        mk = (db.one("SELECT market FROM stocks WHERE stock_id=?", (stock_id,)) or {}).get("market")
+        ratio = recommender.margin_ratio(mk, rs)
+        loan = round(price * shares * ratio)
+        call = risk.margin_call_price(price, ratio, rs["margin_maintenance"])
+        plan["margin_info"] = {"ratio": ratio, "loan": loan, "self_funded": round(price * shares - loan),
+                               "rate": rs["margin_rate"], "maintenance": rs["margin_maintenance"], "call_price": round(call, 2)}
+        if stop and call >= stop:
+            warnings.append(f"融資追繳價 {call:.2f} 高於停損價 {stop}：會先被追繳，建議改用現股")
+        if not (plan.get("margin") or {}).get("recommended", True) and plan.get("margin"):
+            warnings.append("系統原本不建議這筆用融資：" + "；".join(plan["margin"].get("why_not", [])))
     plan["entry_warnings"] = warnings
     pid = db.execute(
-        "INSERT INTO positions(rec_id,stock_id,name,setup,buy_date,buy_price,shares,remaining,plan,status) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (rec_id, stock_id, name, setup, buy_date or datetime.now().date().isoformat(), price, shares, shares, db.dumps(plan), "open"),
+        "INSERT INTO positions(rec_id,stock_id,name,setup,buy_date,buy_price,shares,remaining,plan,status,mode) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (rec_id, stock_id, name, setup, buy_date or datetime.now().date().isoformat(), price, shares, shares, db.dumps(plan), "open", mode),
     )
     db.execute("INSERT INTO trades(position_id,ts,side,price,shares,reason) VALUES (?,?,?,?,?,?)",
-               (pid, db.now(), "buy", price, shares, plan.get("setup_name", "手動建立")))
-    return {"id": pid, "stop": stop, "stop_reason": plan.get("stop_reason"), "warnings": warnings}
+               (pid, db.now(), "buy", price, shares, ("融資買進｜" if mode == "margin" else "") + plan.get("setup_name", "手動建立")))
+    return {"id": pid, "stop": stop, "stop_reason": plan.get("stop_reason"), "warnings": warnings, "mode": mode}
 
 
 def trail_stop(pos: dict, df: pd.DataFrame) -> tuple[float, str] | None:
@@ -130,6 +147,13 @@ def record_sell(position_id: int, price: float, shares: int, reason: str = "手�
         raise ValueError("持股不存在或已結束")
     shares = min(shares, p["remaining"])
     pnl = (price - p["buy_price"]) * shares - price * shares * 0.003 - (price + p["buy_price"]) * shares * 0.001425 * recommender.risk_settings()["fee_discount"]
+    if p.get("mode") == "margin":
+        mi = json.loads(p["plan"]).get("margin_info", {})
+        days = max(1, (datetime.now().date() - datetime.fromisoformat(p["buy_date"]).date()).days)
+        loan_part = p["buy_price"] * shares * mi.get("ratio", 0.6)
+        interest = risk.margin_interest(loan_part, mi.get("rate", 0.065), days)
+        pnl -= interest
+        reason += f"（融資利息約 {interest:,.0f} 元）"
     remaining = p["remaining"] - shares
     db.execute("INSERT INTO trades(position_id,ts,side,price,shares,reason) VALUES (?,?,?,?,?,?)",
                (position_id, db.now(), "sell", price, shares, reason))
@@ -211,6 +235,18 @@ def health_check() -> dict:
         stop = plan.get("stop")
         value = last * p["remaining"]
         pnl = (last - p["buy_price"]) * p["remaining"]
+        margin = None
+        if p.get("mode") == "margin":
+            mi = plan.get("margin_info", {})
+            days = max(1, (datetime.now().date() - datetime.fromisoformat(p["buy_date"]).date()).days)
+            loan = p["buy_price"] * p["remaining"] * mi.get("ratio", 0.6)
+            interest = risk.margin_interest(loan, mi.get("rate", 0.065), days)
+            mr = risk.maintenance_ratio(last, p["buy_price"], mi.get("ratio", 0.6))
+            pnl -= interest
+            margin = {"loan": round(loan), "self_funded": round(p["buy_price"] * p["remaining"] - loan),
+                      "interest": round(interest), "maintenance_ratio": round(mr * 100, 1),
+                      "call_price": mi.get("call_price"), "days": days,
+                      "return_on_equity": round(pnl / (p["buy_price"] * p["remaining"] - loan) * 100, 2) if loan else None}
         risk_amt = max(0.0, (last - stop) * p["remaining"]) if stop else value
         total_value += value
         total_risk += risk_amt
@@ -221,6 +257,13 @@ def health_check() -> dict:
         is_etf = p["stock_id"].startswith("00")  # ETF 沒有公司財報，不做基本面健檢
         fund = None if is_etf else db.cache_get(f"fundamental:{p['stock_id']}")
         notes, status = [], "ok"
+        if margin:
+            if margin["maintenance_ratio"] < 130:
+                status = "danger"
+                notes.append(f"融資維持率 {margin['maintenance_ratio']}% 已低於 130%：會被追繳，需補繳或賣出")
+            elif margin["maintenance_ratio"] < 150:
+                status = "warn"
+                notes.append(f"融資維持率 {margin['maintenance_ratio']}% 偏低，距追繳價 {margin['call_price']} 不遠")
         if stop and last <= stop:
             status = "danger"
             notes.append(f"已跌破停損價 {stop}：進場要素消失，應出場")
@@ -256,6 +299,7 @@ def health_check() -> dict:
             "pnl_pct": round((last / p["buy_price"] - 1) * 100, 2), "stop": stop,
             "stop_reason": plan.get("stop_reason"), "stop_history": plan.get("stop_history", []),
             "entry_warnings": plan.get("entry_warnings", []),
+            "mode": p.get("mode") or "cash", "margin": margin,
             "to_stop_pct": None if not stop else round((last / stop - 1) * 100, 2),
             "next_target": next_t, "r_multiple": r_mult, "status": status, "notes": notes,
             "fundamental_grade": "ETF 不適用" if is_etf else (fund.get("grade") if fund else None),
@@ -265,8 +309,13 @@ def health_check() -> dict:
         })
     capital = rs["capital"]
     port_notes = []
-    if capital and total_value > capital:
-        port_notes.append("持股市值超過帳戶資金設定，請確認是否使用融資")
+    loan_total = sum(i["margin"]["loan"] for i in items if i["margin"])
+    if capital and total_value - loan_total > capital:
+        port_notes.append("自有資金投入超過帳戶資金設定")
+    if loan_total:
+        own = total_value - loan_total
+        port_notes.append(f"融資借款共 {loan_total:,.0f} 元，整體槓桿約 {total_value / own:.2f} 倍（市值／自有資金）"
+                          if own > 0 else f"融資借款共 {loan_total:,.0f} 元")
     if total_value and by_ind:
         top_ind, top_val = max(by_ind.items(), key=lambda kv: kv[1])
         if top_val / total_value > 0.5 and len(positions) > 1:
@@ -283,8 +332,9 @@ def health_check() -> dict:
     return {
         "positions": items,
         "summary": {
-            "capital": capital, "market_value": round(total_value), "exposure_pct": round(total_value / capital * 100, 1) if capital else None,
+            "capital": capital, "market_value": round(total_value), "exposure_pct": round((total_value - loan_total) / capital * 100, 1) if capital else None,
             "unrealized_pnl": round(sum(i["pnl"] for i in items)), "risk_at_stop": round(total_risk),
+            "margin_loan": round(sum(i["margin"]["loan"] for i in items if i["margin"])),
             "industries": {k: round(v) for k, v in by_ind.items()}, **stats,
         },
         "notes": port_notes,

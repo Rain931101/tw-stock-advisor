@@ -55,12 +55,25 @@ class SettingsIn(BaseModel):
     fee_discount: float | None = None
     min_avg_volume: float | None = None
     min_price: float | None = None
+    margin_enabled: bool | None = None
+    margin_ratio_twse: float | None = None
+    margin_ratio_tpex: float | None = None
+    margin_rate: float | None = None
+    margin_maintenance: float | None = None
 
 
 @app.get("/api/settings")
 def get_settings_api():
     rs = recommender.risk_settings()
-    rs["max_stop_pct"] = round(rs["max_loss_per_trade"] / rs["per_trade_capital"] * 100, 2)
+    from app.rules.risk import max_stop_pct
+    rs["max_stop_pct"] = round(max_stop_pct(rs["per_trade_capital"], rs["max_loss_per_trade"]) * 100, 2)
+    rs["warnings"] = []
+    if rs["max_loss_per_trade"] >= rs["per_trade_capital"]:
+        rs["warnings"].append("單筆最大虧損 ≥ 每筆部位資金：等於不設虧損上限。講義範例是部位 10 萬、最大虧損 1 萬（10%）")
+    if rs["per_trade_capital"] > rs["capital"]:
+        rs["warnings"].append("每筆部位資金大於帳戶資金")
+    if rs["margin_enabled"] and rs["per_trade_capital"] < 100_000:
+        rs["warnings"].append("每筆部位資金偏小：融資必須整張買，多數股票買不到 1 張")
     return rs
 
 
@@ -160,6 +173,7 @@ class BuyIn(BaseModel):
     shares: int
     rec_id: int | None = None
     buy_date: str | None = None
+    mode: str = "cash"
 
 
 class SellIn(BaseModel):
@@ -172,7 +186,10 @@ class SellIn(BaseModel):
 def buy(body: BuyIn):
     if body.shares <= 0 or body.price <= 0:
         raise HTTPException(400, "股數與價格必須大於 0")
-    return portfolio.confirm_buy(body.rec_id, body.stock_id, body.price, body.shares, body.buy_date)
+    try:
+        return portfolio.confirm_buy(body.rec_id, body.stock_id, body.price, body.shares, body.buy_date, body.mode)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/positions/{pid}/sell")

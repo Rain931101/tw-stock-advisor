@@ -93,6 +93,14 @@ def intraday_tick(now: datetime | None = None, force: bool = False) -> dict:
         hits = portfolio.evaluate_exits(pos, df, now, intraday=True)
         _handle_exit_hits(pos, hits, q["price"], day, True)
         result["exit_alerts"] += len(hits)
+        mi = pos["plan"].get("margin_info")
+        if pos.get("mode") == "margin" and mi:
+            mr = q["price"] / (pos["buy_price"] * mi["ratio"]) * 100
+            if mr < mi["maintenance"] * 100 * 1.05:
+                notifier.alert("stop", f"融資維持率告警：{pos['stock_id']} {pos['name']}",
+                               f"現價 {q['price']}，維持率約 {mr:.0f}%（追繳線 {mi['maintenance'] * 100:.0f}%、追繳價 {mi['call_price']}）\n"
+                               "跌破追繳線需補繳差額，否則會被斷頭", dedup_key=f"margincall:{pos['id']}:{day}",
+                               stock_id=pos["stock_id"], level="high", ref_type="position", ref_id=pos["id"])
 
     # 2) 有效推薦：進入進場區／失效
     for r in recs:

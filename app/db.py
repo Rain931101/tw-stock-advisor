@@ -59,7 +59,14 @@ def conn() -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.executescript(SCHEMA)
+        _migrate(_conn)
     return _conn
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    cols = {r[1] for r in c.execute("PRAGMA table_info(positions)").fetchall()}
+    if "mode" not in cols:
+        c.execute("ALTER TABLE positions ADD COLUMN mode TEXT DEFAULT 'cash'")
 
 
 def reset_for_tests(path: str = ":memory:") -> None:
@@ -67,6 +74,7 @@ def reset_for_tests(path: str = ":memory:") -> None:
     _conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
     _conn.row_factory = sqlite3.Row
     _conn.executescript(SCHEMA)
+    _migrate(_conn)
 
 
 @contextmanager

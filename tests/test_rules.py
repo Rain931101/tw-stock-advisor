@@ -188,3 +188,37 @@ def test_confirm_buy_keeps_system_stop_and_warns_over_limit():
     r = portfolio.confirm_buy(1, "9999", price=100.0, shares=2000)
     assert r["stop"] == 90.0  # 成交價不影響停損
     assert r["warnings"] and "超過單筆可承受虧損" in r["warnings"][0]  # 2000 股 × 10 元 = 2 萬 > 1 萬
+
+
+# ---------- 融資（槓桿） ----------
+def test_margin_call_price_and_sizing():
+    # 上市 6 成：追繳價 = 1.3 × 0.6 × 買進價 = 78%
+    assert risk.margin_call_price(100, 0.6) == pytest.approx(78.0)
+    m = risk.size_margin(100, 94, per_trade_capital=100_000, max_loss=10_000, ratio=0.6, annual_rate=0.065)
+    assert m.ok and m.shares == 1000 and m.leverage == 2.5
+    assert m.loss_at_stop <= 10_000  # 單筆最大虧損不因槓桿放大
+    # 停損在追繳價之下 → 不適合融資
+    bad = risk.size_margin(100, 70, 100_000, 10_000, 0.6, 0.065)
+    assert not bad.ok and "追繳" in bad.reason
+
+
+def test_margin_position_interest_and_maintenance():
+    from app.services import portfolio
+
+    db.reset_for_tests()
+    db.execute("INSERT INTO stocks VALUES ('9998','測試融資','twse','半導體業')")
+    closes = np.full(80, 100.0)
+    db.upsert_prices([("9998", d.date().isoformat(), c, c, c, c, 2000, 0) for d, c in zip(pd.bdate_range("2026-01-01", periods=80), closes)])
+    r = portfolio.confirm_buy(None, "9998", price=100.0, shares=1000, buy_date="2026-01-01", mode="margin")
+    assert r["mode"] == "margin"
+    h = portfolio.health_check()
+    m = h["positions"][0]["margin"]
+    assert m["loan"] == 60_000 and m["maintenance_ratio"] == pytest.approx(166.7, abs=0.1)
+    assert m["interest"] > 0 and h["summary"]["margin_loan"] == 60_000
+    with pytest.raises(ValueError):
+        portfolio.confirm_buy(None, "9998", price=100.0, shares=500, mode="margin")  # 融資不能零股
+
+
+def test_max_loss_above_position_size_does_not_block_everything():
+    s = risk.size_position(entry=163.5, stop=154, per_trade_capital=5_000, max_loss=10_000)
+    assert s.ok and s.max_entry > 154 and s.shares > 0

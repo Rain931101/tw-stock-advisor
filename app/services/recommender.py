@@ -29,7 +29,42 @@ def risk_settings() -> dict:
         "fee_discount": db.get_setting("fee_discount", s.fee_discount),
         "min_avg_volume": db.get_setting("min_avg_volume", s.min_avg_volume),
         "min_price": db.get_setting("min_price", s.min_price),
+        "margin_enabled": db.get_setting("margin_enabled", s.margin_enabled),
+        "margin_ratio_twse": db.get_setting("margin_ratio_twse", s.margin_ratio_twse),
+        "margin_ratio_tpex": db.get_setting("margin_ratio_tpex", s.margin_ratio_tpex),
+        "margin_rate": db.get_setting("margin_rate", s.margin_rate),
+        "margin_maintenance": db.get_setting("margin_maintenance", s.margin_maintenance),
     }
+
+
+def margin_ratio(market: str | None, rs: dict) -> float:
+    return rs["margin_ratio_tpex"] if market == "tpex" else rs["margin_ratio_twse"]
+
+
+# 延伸規則（非講義）：講義沒有教何時該用融資，以下是保守的使用條件
+MARGIN_SETUPS = {"breakout", "ma60_reclaim", "ma5_pullback", "ma20_ride"}  # 波段型態；短打與猜底不建議用槓桿
+
+
+def margin_option(stock: dict, sig_setup: str, price: float, stop: float, fund: dict | None, stance: str,
+                  cash_shares: int, rs: dict) -> dict:
+    ratio = margin_ratio(stock.get("market"), rs)
+    m = risk.size_margin(price, stop, rs["per_trade_capital"], rs["max_loss_per_trade"], ratio,
+                         rs["margin_rate"], rs["margin_maintenance"], fee_discount=rs["fee_discount"])
+    why_not = []
+    if not rs["margin_enabled"]:
+        why_not.append("設定中未開啟融資（需有信用帳戶）")
+    if not m.ok:
+        why_not.append(m.reason)
+    if not fund or fund.get("grade") not in ("A", "B"):
+        why_not.append("基本面未達 A／B：槓桿只用在體質最好的公司")
+    if stance == "防守":
+        why_not.append("大盤判斷偏防守：不加槓桿")
+    if sig_setup not in MARGIN_SETUPS:
+        why_not.append("短打／猜底型態不適合加槓桿")
+    if m.ok and m.shares <= cash_shares:
+        why_not.append("受單筆最大虧損限制，融資也買不到更多股數，用現股即可")
+    return {**m.to_dict(), "recommended": not why_not, "why_not": why_not,
+            "note": "延伸規則（非講義）：融資虧損以整個部位計算，單筆最大虧損不變；另需確認該股可融資（非全額交割、處置、停資）"}
 
 
 def universe(min_avg_volume: float, min_price: float) -> list[dict]:
@@ -108,6 +143,7 @@ def build_plan(stock: dict, sig: technical.Signal, context: dict, fund: dict | N
         "targets": sig.targets, "healthy_pullback": sig.healthy_pullback,
         "exit_rules": sig.exit_rules, "reasons": reasons, "warnings": warnings, "tags": tags,
         "sizing": sizing.to_dict(), "context": context,
+        "margin": margin_option(stock, sig.setup, price, sig.stop, fund, stance, sizing.shares, rs),
         "fundamental": None if not fund else {
             "score": fund["score"], "grade": fund["grade"], "metrics": fund["metrics"],
             "highlights": [c for c in fund["checks"] if c["status"] in ("good", "bad", "warn")][:8],

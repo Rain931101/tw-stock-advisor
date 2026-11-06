@@ -80,6 +80,13 @@
           <label>選股母體：20 日均量下限（張）<input name="min_avg_volume" type="number"></label>
           <label>選股母體：最低股價<input name="min_price" type="number" step="1"></label>
           <p class="muted" id="max-stop"></p>
+          <h3>槓桿（融資）</h3>
+          <label class="row"><input name="margin_enabled" type="checkbox"> 我有信用帳戶，推薦時一併評估融資</label>
+          <label>上市融資成數（0.6 = 6 成）<input name="margin_ratio_twse" type="number" step="0.05" min="0" max="0.9"></label>
+          <label>上櫃融資成數<input name="margin_ratio_tpex" type="number" step="0.05" min="0" max="0.9"></label>
+          <label>融資年利率（0.065 = 6.5%）<input name="margin_rate" type="number" step="0.001"></label>
+          <label>追繳維持率（1.3 = 130%）<input name="margin_maintenance" type="number" step="0.01"></label>
+          <p class="muted">預設為台股常見條件，請依自己券商的信用交易契約修改。</p>
           <button>儲存</button>
         </form>
       </div>

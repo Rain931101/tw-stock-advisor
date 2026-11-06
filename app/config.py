@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     max_loss_per_trade: float = 10_000  # 單筆最大可承受虧損
     fee_discount: float = 0.3  # 手續費折數（講義建議 3 折）
 
+    # 融資（槓桿）：預設值為台股常見條件，請依自己券商的信用交易條件修改
+    margin_enabled: bool = True  # 有信用帳戶才開
+    margin_ratio_twse: float = 0.6  # 上市融資成數
+    margin_ratio_tpex: float = 0.5  # 上櫃融資成數
+    margin_rate: float = 0.065  # 融資年利率
+    margin_maintenance: float = 1.30  # 維持率低於此即追繳
+
     # 選股母體
     min_avg_volume: int = 1000  # 20 日均量（張）
     min_price: float = 10.0

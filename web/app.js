@@ -70,6 +70,18 @@ function planHtml(p) {
     <dt>建議部位</dt><dd>${fmt(sz.shares, 0)} 股（約 ${fmt(sz.cost, 0)} 元），打到停損約虧 ${fmt(sz.loss_at_stop, 0)} 元（${sz.stop_pct}%）</dd>
   </dl>`;
 }
+function marginHtml(m) {
+  if (!m) return "";
+  const head = m.recommended ? `<span class="chip up">建議可用融資</span>` : `<span class="chip">建議用現股</span>`;
+  return `<details ${m.recommended ? "open" : ""}><summary>槓桿（融資）方案　${head}</summary>
+    ${m.ok ? `<dl class="plan">
+      <dt>融資股數</dt><dd>${fmt(m.shares, 0)} 股（${fmt(m.lots, 0)} 張）</dd>
+      <dt>自備款／融資</dt><dd>${fmt(m.self_funded, 0)} ／ ${fmt(m.loan, 0)} 元（成數 ${Math.round(m.ratio * 100)}%，槓桿 ${m.leverage} 倍）</dd>
+      <dt>追繳價</dt><dd class="down">${fmt(m.call_price)}（維持率跌破 130%）</dd>
+      <dt>打到停損</dt><dd>約虧 ${fmt(m.loss_at_stop, 0)} 元（含預估 20 日利息 ${fmt(m.interest_est, 0)} 元）</dd></dl>` : ""}
+    ${m.why_not.length ? `<ul class="list">${m.why_not.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    <p class="muted">${esc(m.note)}</p></details>`;
+}
 function exitRulesHtml(rules) {
   const act = { sell_all: "出場", sell_half: "減碼 50%", watch_pullback: "停利觀察", notify: "提醒", target_hit: "停利" };
   return `<ul class="list">${(rules || []).map((r) => `<li><span class="chip">${act[r.action] || r.action}</span>${esc(r.label)}${r.level ? `（${fmt(r.level)}）` : ""}</li>`).join("")}</ul>`;
@@ -81,6 +93,7 @@ function recCard(r) {
     <div class="head"><div class="title"><a href="#" data-sid="${r.stock_id}">${r.stock_id} ${esc(r.name)}</a></div><div class="score">分數 ${fmt(r.score, 1)}｜${r.trade_date}</div></div>
     <div><span class="chip">${esc(p.setup_name)}</span>${(p.tags || []).map((t) => `<span class="chip">${esc(t)}</span>`).join("")}<span class="chip">${esc(p.industry || "")}</span></div>
     ${planHtml(p)}
+    ${marginHtml(p.margin)}
     <details open><summary>為什麼推薦</summary><ul class="list">${p.reasons.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>
     ${p.warnings.length ? `<details><summary class="warn">注意事項（${p.warnings.length}）</summary><ul class="list">${p.warnings.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}
     <details><summary>停利／停損／減碼規則</summary>${exitRulesHtml(p.exit_rules)}</details>
@@ -100,7 +113,7 @@ document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-buy]");
   if (b) {
     const r = recCache.find((x) => x.id == b.dataset.buy);
-    buyDialog({ rec_id: r.id, stock_id: r.stock_id, name: r.name, price: r.plan.price, shares: r.plan.sizing.shares, stop: r.plan.stop, stop_reason: r.plan.stop_reason });
+    buyDialog({ rec_id: r.id, stock_id: r.stock_id, name: r.name, price: r.plan.price, shares: r.plan.sizing.shares, stop: r.plan.stop, stop_reason: r.plan.stop_reason, margin: r.plan.margin });
   }
   const d = e.target.closest("[data-dismiss]");
   if (d) { await api(`/api/recommendations/${d.dataset.dismiss}/dismiss`, { method: "POST" }); loaders.recs(); }
@@ -120,17 +133,30 @@ function dialog(html, onSubmit) {
 function buyDialog(d) {
   dialog(`<h3>確認買進 ${esc(d.stock_id)} ${esc(d.name || "")}</h3>
     ${d.rec_id ? "" : `<label>股票代號<input name="stock_id" required value="${esc(d.stock_id || "")}"></label>`}
+    <label>交易方式<select name="mode" id="buy-mode">
+      <option value="cash">現股</option>
+      <option value="margin" ${d.margin?.recommended ? "selected" : ""}>融資（槓桿）${d.margin ? (d.margin.recommended ? "｜系統建議" : "｜系統不建議") : ""}</option></select></label>
+    <p class="muted" id="mode-hint"></p>
     <label>成交價<input name="price" type="number" step="0.01" required value="${d.price ?? ""}"></label>
-    <label>股數（1 張 = 1000 股）<input name="shares" type="number" step="1" required value="${d.shares ?? 1000}"></label>
+    <label>股數（1 張 = 1000 股；融資須整張）<input name="shares" id="buy-shares" type="number" step="1" required value="${d.margin?.recommended ? d.margin.shares : (d.shares ?? 1000)}"></label>
     <label>買進日期<input name="buy_date" type="date" value="${new Date().toISOString().slice(0, 10)}"></label>
     <p>停損：${d.stop ? `<b class="down">${fmt(d.stop)}</b>　<span class="muted">${esc(d.stop_reason || "")}</span>` : `<span class="muted">由系統依目前型態計算</span>`}</p>
     <p class="muted">停損位置看的是「進場要素消失」的價位，跟你的成交價無關，由系統決定，之後收盤會依規則自動上移（只上不下）。確認後開始盤中監控，該停損、減碼、停利時推播 LINE。</p>`,
     async (v) => {
-      const r = await api("/api/positions", { method: "POST", body: { rec_id: d.rec_id || null, stock_id: v.stock_id || d.stock_id, price: +v.price, shares: +v.shares, buy_date: v.buy_date } });
+      const r = await api("/api/positions", { method: "POST", body: { rec_id: d.rec_id || null, stock_id: v.stock_id || d.stock_id, price: +v.price, shares: +v.shares, buy_date: v.buy_date, mode: v.mode } });
       loaders.recs(); loaders.portfolio();
       if (r.warnings?.length) setTimeout(() => dialog(`<h3>已記錄買進，但請注意</h3><ul class="list">${r.warnings.map((w) => `<li class="warn">${esc(w)}</li>`).join("")}</ul><p>系統停損：<b class="down">${fmt(r.stop)}</b>　<span class="muted">${esc(r.stop_reason || "")}</span></p>`, async () => {}), 300);
       else toast(`已記錄買進，停損 ${fmt(r.stop)}，開始監控`);
     });
+  const sel = $("#buy-mode"), hint = $("#mode-hint"), sh = $("#buy-shares");
+  const upd = () => {
+    const m = d.margin;
+    if (sel.value === "margin") {
+      hint.innerHTML = m ? (m.ok ? `建議 ${fmt(m.shares, 0)} 股，自備款約 ${fmt(m.self_funded, 0)} 元，追繳價 ${fmt(m.call_price)}${m.why_not.length ? `<br><span class="warn">${esc(m.why_not.join("；"))}</span>` : ""}` : `<span class="warn">${esc(m.reason)}</span>`) : "融資成數依設定頁（上市 6 成、上櫃 5 成），系統會計算追繳價並監控維持率";
+      if (m?.ok) sh.value = m.shares;
+    } else { hint.textContent = ""; if (d.shares) sh.value = d.shares; }
+  };
+  sel.addEventListener("change", upd); upd();
 }
 $("#add-pos").addEventListener("click", () => buyDialog({}));
 
@@ -140,9 +166,9 @@ loaders.portfolio = async () => {
   const h = await api("/api/portfolio/health");
   const s = h.summary;
   $("#pf-summary").innerHTML = [
-    ["持股市值", fmt(s.market_value, 0)], ["資金使用率", s.exposure_pct == null ? "—" : s.exposure_pct + "%"],
+    ["持股市值", fmt(s.market_value, 0)], ["自有資金使用率", s.exposure_pct == null ? "—" : s.exposure_pct + "%"],
     ["未實現損益", signed(s.unrealized_pnl)], ["全部打到停損的虧損", fmt(s.risk_at_stop, 0)],
-    ["已實現損益", signed(s.realized_pnl)], ["勝率", s.win_rate == null ? "—" : `${s.win_rate}%（${s.closed_trades} 筆）`],
+    ["融資借款", fmt(s.margin_loan, 0)], ["已實現損益", signed(s.realized_pnl)], ["勝率", s.win_rate == null ? "—" : `${s.win_rate}%（${s.closed_trades} 筆）`],
   ].map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
   $("#pf-notes").innerHTML = h.notes.length ? `<div class="card"><h3>投資組合提醒</h3><ul class="list">${h.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>` : "";
   $("#positions").innerHTML = h.positions.map((p) => `<div class="card status-${p.status}">
@@ -150,7 +176,9 @@ loaders.portfolio = async () => {
        <div class="score">${esc(p.setup)}｜${p.buy_date}</div></div>
      <dl class="plan">
        <dt>成本／現價</dt><dd>${fmt(p.buy_price)} → <b>${fmt(p.last)}</b>　${pct(p.pnl_pct)}　${signed(p.pnl)} 元</dd>
-       <dt>持股</dt><dd>${fmt(p.shares, 0)} 股，市值 ${fmt(p.value, 0)}</dd>
+       <dt>持股</dt><dd>${fmt(p.shares, 0)} 股，市值 ${fmt(p.value, 0)}　<span class="chip">${p.mode === "margin" ? "融資" : "現股"}</span></dd>
+       ${p.margin ? `<dt>融資</dt><dd>自備 ${fmt(p.margin.self_funded, 0)}／借 ${fmt(p.margin.loan, 0)} 元，已計息 ${p.margin.days} 天約 ${fmt(p.margin.interest, 0)} 元（損益已扣）</dd>
+       <dt>維持率</dt><dd class="${p.margin.maintenance_ratio < 150 ? "danger" : ""}"><b>${p.margin.maintenance_ratio}%</b>　追繳價 ${fmt(p.margin.call_price)}　自有資金報酬 ${pct(p.margin.return_on_equity)}</dd>` : ""}
        <dt>停損（系統）</dt><dd><b class="down">${fmt(p.stop)}</b>（距離 ${p.to_stop_pct ?? "—"}%）<br><span class="muted">${esc(p.stop_reason || "")}</span></dd>
        <dt>下一個目標</dt><dd>${p.next_target ? `${fmt(p.next_target.price)}（${esc(p.next_target.label)}）` : "—"}</dd>
        <dt>R 倍數</dt><dd>${p.r_multiple ?? "—"}</dd>
@@ -283,8 +311,8 @@ setInterval(pollAlerts, 15000);
 // ---------------- 設定 ----------------
 loaders.settings = async () => {
   const s = await api("/api/settings");
-  for (const [k, v] of Object.entries(s)) { const i = $(`#settings-form [name=${k}]`); if (i) i.value = v; }
-  $("#max-stop").textContent = `換算：進場點到停損點的距離不能超過 ${s.max_stop_pct}%，超過就不進場。`;
+  for (const [k, v] of Object.entries(s)) { const i = $(`#settings-form [name=${k}]`); if (i) { if (i.type === "checkbox") i.checked = !!v; else i.value = v; } }
+  $("#max-stop").innerHTML = `換算：進場點到停損點的距離不能超過 ${s.max_stop_pct}%，超過就不進場。` + (s.warnings || []).map((w) => `<br><span class="warn">⚠️ ${esc(w)}</span>`).join("");
   const st = await api("/api/status");
   $("#sys").innerHTML = `<table>
     <tr><th>最新資料日</th><td>${st.latest_date || "尚無資料"}</td></tr>
@@ -297,7 +325,8 @@ loaders.settings = async () => {
 };
 $("#settings-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const body = Object.fromEntries([...new FormData(e.target)].map(([k, v]) => [k, +v]));
+  const body = Object.fromEntries([...new FormData(e.target)].filter(([k]) => k !== "margin_enabled").map(([k, v]) => [k, +v]));
+  body.margin_enabled = $("#settings-form [name=margin_enabled]").checked;
   await api("/api/settings", { method: "POST", body }); toast("已儲存"); loaders.settings();
 });
 $$("[data-job]").forEach((b) => b.addEventListener("click", async () => {
