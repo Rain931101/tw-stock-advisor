@@ -156,7 +156,7 @@ def build_plan(stock: dict, sig: technical.Signal, context: dict, fund: dict | N
     }
 
 
-def save_recommendation(plan: dict, trade_date: str, intraday: bool) -> int | None:
+def save_recommendation(plan: dict, trade_date: str, intraday: bool, notify: bool = True) -> int | None:
     exists = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?",
                     (trade_date, plan["stock_id"], plan["setup"]))
     if exists:
@@ -165,6 +165,8 @@ def save_recommendation(plan: dict, trade_date: str, intraday: bool) -> int | No
         "INSERT INTO recommendations(created_at,trade_date,stock_id,name,setup,score,status,plan) VALUES (?,?,?,?,?,?,?,?)",
         (db.now(), trade_date, plan["stock_id"], plan["name"], plan["setup"], plan["score"], "active", db.dumps(plan)),
     )
+    if not notify:
+        return rid
     sz = plan["sizing"]
     tgt = "、".join(f"{t['price']}（{t['label']}）" for t in plan["targets"][:2]) or "—"
     when = "盤中" if intraday else "收盤"
@@ -320,3 +322,96 @@ def refresh_fundamentals(limit: int = 80) -> int:
     """（相容舊排程）改為呼叫全市場更新。"""
     refresh_all_fundamentals()
     return fund_status["done"]
+
+
+# ======================= 個股：買進與否 =======================
+def _plan_block_reason(sig: technical.Signal, price: float, rs: dict) -> str:
+    if sig.stop is None or price <= sig.stop:
+        return "現價已在停損價之下"
+    rr = [(t["price"] - price) / (price - sig.stop) for t in sig.targets]
+    if not rr or max(rr) < 1.5:
+        return f"操作空間不足：到目標的報酬／風險只有 {max(rr) if rr else 0:.1f}（至少要 1.5）"
+    sz = risk.size_position(price, sig.stop, rs["per_trade_capital"], rs["max_loss_per_trade"], rs["fee_discount"])
+    if (sig.entry_low or price) > sz.max_entry:
+        return f"停損距離太遠：在可承受虧損內最高只能買到 {sz.max_entry}，整個進場區都超過"
+    return "未通過風控"
+
+
+def stock_verdict(stock: dict, tech: dict, fund: dict | None, chips: dict | None, price: float,
+                  stance: str, sectors: list[dict]) -> dict:
+    """依兩份講義給出：建議買進／觀望／不建議買進，並附理由與操作計畫。"""
+    rs = risk_settings()
+    ctx = tech.get("context") or {}
+    sigs: list[technical.Signal] = tech.get("signals") or []
+    is_etf = stock["stock_id"].startswith("00")
+    out = {"decision": "wait", "label": "觀望", "summary": "", "reasons": [], "cautions": [], "plan": None, "closest": None}
+
+    # 1) 基本面：好公司（兩種武器缺一不可）
+    if not is_etf:
+        if fund is None:
+            out["cautions"].append("基本面資料尚未取得（全市場更新中），暫時無法判斷公司體質")
+        elif not fund.get("pass"):
+            bad = [f"{c['name']}：{c['detail']}" for c in fund["checks"] if c["status"] in ("bad", "warn")][:4]
+            return {**out, "decision": "avoid", "label": "不建議買進",
+                    "summary": f"基本面健檢未通過（{fund['grade']}，{fund['score']} 分）：講義第一步就是淘汰體質不好的公司",
+                    "reasons": bad}
+        else:
+            out["reasons"].append(f"基本面 {fund['grade']}（{fund['score']} 分），體質合格")
+    else:
+        out["cautions"].append("ETF 不做公司基本面健檢，只依技術面判斷")
+
+    # 2) 技術面位階與格局
+    if ctx.get("level") == "弱位階":
+        return {**out, "decision": "avoid", "label": "不建議買進",
+                "summary": "弱位階（年線之下、季線在年線下）：便宜≠風險小，越弱的位階資金越不愛",
+                "reasons": out["reasons"] + [f"位階 {ctx.get('level')}、格局 {ctx.get('structure')}"]}
+    if ctx.get("structure") == "downtrend":
+        return {**out, "decision": "avoid", "label": "不建議買進",
+                "summary": "格局低過低、高不過高，屬空方格局，等格局轉換（先看到高過高）再說",
+                "reasons": out["reasons"]}
+
+    # 3) 進場型態＋風控
+    triggered = [s for s in sigs if s.triggered]
+    if (fund and fund.get("pass")) or is_etf or fund is None:
+        plans, blocked = [], []
+        for s in triggered:
+            p = build_plan(stock, s, ctx, fund, chips, sectors, stance, rs, price)
+            if p:
+                plans.append(p)
+            else:
+                blocked.append(f"{s.name}：{_plan_block_reason(s, price, rs)}")
+        if plans and fund is not None:
+            best = max(plans, key=lambda p: p["score"])
+            day = datetime.now().date().isoformat()
+            rid = save_recommendation(best, day, intraday=False, notify=False)
+            if rid is None:
+                row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?",
+                             (day, best["stock_id"], best["setup"]))
+                rid = row["id"] if row else None
+            out["rec_id"] = rid
+            out.update(decision="buy", label="建議買進", plan=best,
+                       summary=f"符合「{best['setup_name']}」，進場區 {best['entry_low']}～{best['entry_high']}，"
+                               f"停損 {best['stop']}，報酬／風險 {best['reward_risk']}")
+            out["reasons"] += best["reasons"]
+            out["cautions"] += best["warnings"]
+            return out
+        if plans and fund is None:
+            out["plan"] = max(plans, key=lambda p: p["score"])
+            out["summary"] = "技術面已符合進場型態，但基本面尚未確認，先觀望（講義：兩種武器缺一不可）"
+            return out
+        if blocked:
+            out["summary"] = "技術面有型態成立，但不符合風控或操作空間，暫不進場"
+            out["reasons"] += blocked
+            return out
+
+    # 4) 沒有成立的型態：找最接近的，告訴使用者在等什麼
+    cands = [s for s in sigs if s.reasons or s.missing]
+    if cands:
+        near = max(cands, key=lambda s: len(s.reasons) / max(len(s.reasons) + len(s.missing), 1))
+        out["closest"] = {"name": near.name, "met": near.reasons, "missing": near.missing}
+        out["summary"] = f"目前沒有成立的進場型態。最接近的是「{near.name}」，還差 {len(near.missing)} 個條件"
+    else:
+        out["summary"] = "目前沒有成立的進場型態"
+    if stance == "防守":
+        out["cautions"].append("今日大盤判斷偏防守")
+    return out

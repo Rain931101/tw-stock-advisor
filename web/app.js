@@ -251,6 +251,7 @@ async function openStock(sid) {
       <div class="tile"><div class="k">量比</div><div class="v">${ctx.volume_ratio ?? "—"}</div><div class="muted">>1 代表今日量較大</div></div>
       <div class="tile"><div class="k">基本面</div><div class="v">${f ? `${f.grade}（${f.score}）` : "—"}</div><div class="muted">${f ? (f.pass ? "體質合格" : "未通過健檢") : esc(d.fundamental_error || "")}</div></div>
     </div>
+    ${verdictHtml(d.verdict, sid)}
     <div class="card"><div id="chart"></div><p class="muted">K 線：紅漲綠跌；均線 5／20／60／240。${sigs.some((s) => s.triggered) ? "虛線為已成立型態的停損（綠）與目標（紅）。" : "目前沒有成立的進場型態，因此不畫停損與目標線。"}</p></div>
     <div class="grid two">
       <div class="card"><h3>進場型態檢查</h3>
@@ -266,6 +267,26 @@ async function openStock(sid) {
     ${c ? `<div class="card"><h3>法人籌碼（張）</h3><p>5 日：外資 ${signed(c.summary.foreign["5d"])}、投信 ${signed(c.summary.trust["5d"])}、自營 ${signed(c.summary.dealer["5d"])}　｜　20 日：外資 ${signed(c.summary.foreign["20d"])}、投信 ${signed(c.summary.trust["20d"])}</p>
       <ul class="list">${c.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>` : ""}`;
   drawChart(d.bars, sigs.find((s) => s.triggered));
+  const vb = $("#verdict-buy");
+  if (vb) vb.addEventListener("click", () => {
+    const p = d.verdict.plan;
+    buyDialog({ rec_id: d.verdict.rec_id, stock_id: sid, name: d.info.name, price: p.price, shares: p.sizing.shares, stop: p.stop, stop_reason: p.stop_reason, margin: p.margin });
+  });
+}
+function verdictHtml(v, sid) {
+  if (!v) return "";
+  const cls = { buy: "verdict-buy", wait: "verdict-wait", avoid: "verdict-avoid" }[v.decision];
+  const icon = { buy: "🟢", wait: "🟡", avoid: "⛔" }[v.decision];
+  const p = v.plan;
+  return `<div class="card verdict ${cls}">
+    <div class="verdict-head"><span class="verdict-label">${icon} ${esc(v.label)}</span><span>${esc(v.summary)}</span></div>
+    ${v.reasons.length ? `<ul class="list">${v.reasons.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    ${v.closest ? `<p><b>還在等的條件</b>（${esc(v.closest.name)}）</p><ul class="list">${v.closest.missing.map((x) => `<li>☐ ${esc(x)}</li>`).join("")}${v.closest.met.map((x) => `<li class="muted">☑ ${esc(x)}</li>`).join("")}</ul>` : ""}
+    ${v.cautions.length ? `<ul class="list">${v.cautions.map((x) => `<li class="warn">! ${esc(x)}</li>`).join("")}</ul>` : ""}
+    ${p && v.decision === "buy" ? `${planHtml(p)}${marginHtml(p.margin)}<details><summary>停利／停損／減碼規則</summary>${exitRulesHtml(p.exit_rules)}</details>
+      <div class="btns"><button id="verdict-buy">我已買進</button></div>` : ""}
+    <p class="muted">依兩份講義：基本面健檢 → 位階與格局 → 進場型態 → 風控（可承受虧損、報酬／風險 ≥ 1.5）→ 大盤與籌碼。僅為規則判斷，不是投資建議。</p>
+  </div>`;
 }
 function drawChart(bars, sig) {
   const el = $("#chart");

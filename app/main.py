@@ -146,6 +146,7 @@ def market_api():
         if _mk_cache.get("ts", 0) + 30 > time.time():
             return _mk_cache["data"]
         data = db.jsonable(market.overview())
+        db.cache_set("market_verdict", {"stance": data["verdict"]["stance"], "sectors": data.get("sectors") or []})
         _mk_cache.update(ts=time.time(), data=data)
         return data
 
@@ -207,12 +208,26 @@ def stock(sid: str, fundamentals: bool = True):
         src = technical.synthetic_bar(df, q, pd.Timestamp.now().date().isoformat()) if intraday else df
         res = technical.evaluate(src, now=pd.Timestamp.now().to_pydatetime() if intraday else None, intraday=bool(intraday))
         out["technical"] = {"context": res["context"], "signals": [s.to_dict() for s in res["signals"]]}
+        out["_res"] = res
     if fundamentals:
         try:
             out["fundamental"] = company.fundamental_report(sid)
             out["chips"] = company.chips(sid)
         except Exception as e:
             out["fundamental_error"] = str(e)
+    res = out.pop("_res", None)
+    if res and res["context"]:
+        mv = db.cache_get("market_verdict", 1)  # 一小時內的大盤判斷直接沿用，個股頁不必重算
+        if mv is None:
+            try:
+                mk = market_api()
+                mv = {"stance": mk["verdict"]["stance"], "sectors": mk.get("sectors") or []}
+            except Exception:
+                mv = {"stance": "中性", "sectors": db.cache_get("sectors") or []}
+        stance, sectors = mv["stance"], mv["sectors"]
+        price = (out["quote"] or {}).get("price") or res["context"]["close"]
+        fund = out["fundamental"] if not sid.startswith("00") else None
+        out["verdict"] = recommender.stock_verdict(info, res, fund, out["chips"], price, stance, sectors)
     return db.jsonable(out)
 
 

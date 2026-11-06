@@ -33,6 +33,7 @@ class Signal:
     score: float = 0
     reasons: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)  # 尚未符合的條件
     entry_low: float | None = None
     entry_high: float | None = None
     stop: float | None = None
@@ -142,6 +143,7 @@ def setup_breakout(ctx: Context) -> Signal:
     r, s = ctx.row, Signal("breakout", SETUP_NAMES["breakout"], False)
     box = ctx.box
     if box is None or box.days < 40:
+        s.missing = ["先要有 40 天以上的整理區間（箱型）"]
         return s
     vr = _vol_ratio(ctx) or 0
     conds = {
@@ -153,6 +155,7 @@ def setup_breakout(ctx: Context) -> Signal:
         "短中長期均線靠攏": ind.ma_converged(ctx.prev, 0.08),
     }
     s.reasons = [k for k, v in conds.items() if v]
+    s.missing = [k for k, v in conds.items() if not v]
     if box.days >= 120:
         s.reasons.append("整理半年以上：水平力道 = 垂直力道，發動力道強")
     if r["close"] >= ctx.df["high"].iloc[-250:].max() * 0.999:
@@ -190,6 +193,7 @@ def setup_ma60_reclaim(ctx: Context) -> Signal:
         "位於年線之上": not pd.isna(r["ma240"]) and r["close"] > r["ma240"],
     }
     s.reasons = [k for k, v in conds.items() if v]
+    s.missing = [k for k, v in conds.items() if not v]
     # 盤中：打到季線要觀察 12:00 後有無撐住
     s.triggered = all(conds.values()) and ctx.after(12, 0)
     key_low = float(df["low"].iloc[-15:].min())
@@ -224,6 +228,7 @@ def setup_ma5_pullback(ctx: Context) -> Signal:
         "五日線收腳有撐": r["close"] >= r["ma5"],
     }
     s.reasons = [k for k, v in conds.items() if v]
+    s.missing = [k for k, v in conds.items() if not v]
     # 9:30 前的壓回多是洗盤，9:30 後再判斷
     s.triggered = all(conds.values()) and ctx.after(9, 30)
     s.entry_low = round_tick(r["ma5"] * 0.995)
@@ -254,6 +259,7 @@ def setup_ma20_ride(ctx: Context) -> Signal:
         "季線上揚": r["ma60"] > df["ma60"].iloc[-21],
     }
     s.reasons = [k for k, v in conds.items() if v]
+    s.missing = [k for k, v in conds.items() if not v]
     s.triggered = all(conds.values()) and ctx.after(12, 0)
     s.entry_low = round_tick(r["ma20"] * 0.99)
     s.entry_high = round_tick(r["ma20"] * 1.03)
@@ -277,6 +283,7 @@ def setup_rebound_ma5(ctx: Context) -> Signal:
         "今日站上五日線（昨日在五日線下）": r["close"] > r["ma5"] and p["close"] <= p["ma5"],
     }
     s.reasons = [k for k, v in conds.items() if v]
+    s.missing = [k for k, v in conds.items() if not v]
     s.stop = round_tick(float(p["low"]))
     s.stop_reason = "站穩五日線的前一天低點"
     s.targets = _targets_above(ctx, r["close"])
@@ -314,6 +321,7 @@ def setup_climax_bottom(ctx: Context) -> Signal:
         "在季線之上或左側有支撐": r["close"] > r["ma60"] or (ctx.box is not None and p["low"] >= ctx.box.bottom * 0.98),
     }
     s.reasons = [k for k, v in conds.items() if v]
+    s.missing = [k for k, v in conds.items() if not v]
     s.triggered = all(conds.values()) and ctx.after(12, 0)
     s.stop = round_tick(float(p["low"]) * 0.995)
     s.stop_reason = "爆量底不一定是底，停損守爆量 K 棒最低"
@@ -358,6 +366,9 @@ def evaluate(df: pd.DataFrame, now: datetime | None = None, intraday: bool = Fal
         if sig.triggered and (sig.stop is None or sig.stop >= close):
             sig.triggered = False
             sig.warnings.append("停損價不在現價之下，進場要素不成立")
+        if not sig.triggered and not sig.missing:
+            # 條件都到位卻沒觸發：被時間規則或共通過濾擋下（垃圾時間、空方格局、量縮緩跌、操作空間不足…）
+            sig.missing = [w for w in sig.warnings if "乖離" not in w][:2] or ["盤中尚未到判斷時間"]
         if not sig.triggered:
             # 型態沒成立就沒有「進場要素」，也就沒有停損／目標可言，不提供假設值以免誤用
             sig.stop = sig.entry_low = sig.entry_high = sig.healthy_pullback = None

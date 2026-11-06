@@ -74,3 +74,11 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px
 .form label.row { display: flex; align-items: center; gap: 8px; color: var(--ink); }
 .chip.up { background: color-mix(in srgb, var(--up) 15%, transparent); color: var(--up); }
 button.danger-text { color: var(--danger); }
+.verdict { border-left-width: 6px; }
+.verdict-buy { border-left-color: var(--up); }
+.verdict-wait { border-left-color: var(--warn); }
+.verdict-avoid { border-left-color: var(--muted); }
+.verdict-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
+.verdict-label { font-size: 20px; font-weight: 700; white-space: nowrap; }
+.verdict-buy .verdict-label { color: var(--up); }
+.verdict-wait .verdict-label { color: var(--warn); }

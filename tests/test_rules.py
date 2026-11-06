@@ -333,3 +333,21 @@ def test_untriggered_setup_has_no_stop():
     for sig in technical.evaluate(flat)["signals"]:
         if not sig.triggered:
             assert sig.stop is None and sig.targets == [] and sig.exit_rules == []
+
+
+# ---------- 個股買進與否 ----------
+def test_stock_verdict_avoids_bad_fundamentals_and_waits_without_setup():
+    from app.services import recommender
+
+    db.reset_for_tests()
+    flat = make_df(100 + np.sin(np.arange(300) / 5) * 2)
+    tech = technical.evaluate(flat)
+    stock = {"stock_id": "9996", "name": "測試", "market": "twse", "industry": "半導體業"}
+    bad = {"pass": False, "grade": "D", "score": 40, "checks": [{"name": "近四季沒有在賺錢", "detail": "虧損", "status": "bad"}]}
+    v = recommender.stock_verdict(stock, tech, bad, None, 100.0, "中性", [])
+    assert v["decision"] == "avoid" and "基本面" in v["summary"]
+    good = {"pass": True, "grade": "A", "score": 90, "checks": [], "metrics": {}}
+    v = recommender.stock_verdict(stock, tech, good, None, 100.0, "中性", [])
+    assert v["decision"] in ("wait", "avoid")
+    if v["decision"] == "wait" and v["closest"]:
+        assert v["closest"]["missing"]  # 告訴使用者還差哪些條件
