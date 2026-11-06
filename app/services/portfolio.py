@@ -16,8 +16,8 @@ def _pos(row: dict) -> dict:
     return row
 
 
-def confirm_buy(rec_id: int | None, stock_id: str, price: float, shares: int, buy_date: str | None = None,
-                stop: float | None = None) -> int:
+def confirm_buy(rec_id: int | None, stock_id: str, price: float, shares: int, buy_date: str | None = None) -> dict:
+    """記錄買進。停損一律沿用系統計畫（進場要素消失的位置），不因成交價改變。"""
     plan, name, setup = {}, None, "manual"
     if rec_id:
         rec = db.one("SELECT * FROM recommendations WHERE id=?", (rec_id,))
@@ -30,19 +30,73 @@ def confirm_buy(rec_id: int | None, stock_id: str, price: float, shares: int, bu
         name = s["name"] if s else stock_id
     if not plan:
         plan = manual_plan(stock_id, price)
-    if stop:
-        plan["stop"] = stop
-        for r in plan.get("exit_rules", []):
-            if r["type"] == "price_below":
-                r["level"] = stop
-    plan["state"] = {"target_hit": False, "high_since_entry": price, "half_sold": False}
+    stop = plan.get("stop")
+    plan["initial_stop"] = stop
+    plan["stop_history"] = [{"date": buy_date or datetime.now().date().isoformat(), "stop": stop,
+                             "reason": plan.get("stop_reason") or "進場要素消失的位置"}]
+    plan["state"] = {"target_hit": False, "high_since_entry": price}
+    # 成交價與計畫的落差只提醒、不改停損
+    warnings = []
+    rs = recommender.risk_settings()
+    if stop and price <= stop:
+        warnings.append(f"成交價 {price} 已低於停損價 {stop}：進場要素已消失，建議出場")
+    elif stop:
+        loss = (price - stop) * shares
+        if loss > rs["max_loss_per_trade"]:
+            warnings.append(f"以成交價 {price}、{shares:,} 股計，打到停損 {stop} 約虧 {loss:,.0f} 元，"
+                            f"超過單筆可承受虧損 {rs['max_loss_per_trade']:,.0f} 元，建議減少股數")
+    plan["entry_warnings"] = warnings
     pid = db.execute(
         "INSERT INTO positions(rec_id,stock_id,name,setup,buy_date,buy_price,shares,remaining,plan,status) VALUES (?,?,?,?,?,?,?,?,?,?)",
         (rec_id, stock_id, name, setup, buy_date or datetime.now().date().isoformat(), price, shares, shares, db.dumps(plan), "open"),
     )
     db.execute("INSERT INTO trades(position_id,ts,side,price,shares,reason) VALUES (?,?,?,?,?,?)",
                (pid, db.now(), "buy", price, shares, plan.get("setup_name", "手動建立")))
-    return pid
+    return {"id": pid, "stop": stop, "stop_reason": plan.get("stop_reason"), "warnings": warnings}
+
+
+def trail_stop(pos: dict, df: pd.DataFrame) -> tuple[float, str] | None:
+    """收盤後依講義規則上移停損（只上不下）。回傳 (新停損, 理由) 或 None。
+
+    1. 獲利達 2R：停損上移至成本（保本），用對的虧損換取對的獲利
+    2. 目標價滿足後：改用五日線移動停利（講義：我都用 5 日線當防守跟移動保利）
+    3. 以五日線防守的型態：停損跟著五日線往上走
+    """
+    plan = pos["plan"]
+    stop = plan.get("stop")
+    init = plan.get("initial_stop") or stop
+    if not stop or len(df) < 6:
+        return None
+    d = ind.add_indicators(df)
+    r = d.iloc[-1]
+    close, ma5 = float(r["close"]), float(r["ma5"])
+    buy = pos["buy_price"]
+    cands = []
+    if init and buy > init and close >= buy + 2 * (buy - init):
+        cands.append((buy, "獲利達 2R，停損上移至成本（保本）"))
+    if plan.get("state", {}).get("target_hit") and ma5 < close:
+        cands.append((ma5 * 0.995, "目標價已滿足，改用五日線移動停利"))
+    if pos.get("setup") in ("ma5_pullback", "rebound_ma5") and ma5 < close:
+        cands.append((ma5 * 0.985, "此型態以五日線防守，停損跟著五日線上移"))
+    if not cands:
+        return None
+    new, reason = max(cands, key=lambda x: x[0])
+    from app.rules.risk import round_tick
+    new = round_tick(new)
+    if new <= stop * 1.001 or new >= close:
+        return None
+    return new, reason
+
+
+def apply_stop(pos: dict, new: float, reason: str, day: str) -> None:
+    plan = pos["plan"]
+    plan["stop"] = new
+    plan["stop_reason"] = reason
+    for r in plan.get("exit_rules", []):
+        if r["type"] == "price_below":
+            r["level"] = new
+    plan.setdefault("stop_history", []).append({"date": day, "stop": new, "reason": reason})
+    db.execute("UPDATE positions SET plan=? WHERE id=?", (db.dumps(plan), pos["id"]))
 
 
 def manual_plan(stock_id: str, price: float) -> dict:
@@ -82,15 +136,6 @@ def record_sell(position_id: int, price: float, shares: int, reason: str = "手�
     db.execute("UPDATE positions SET remaining=?, realized_pnl=realized_pnl+?, status=?, closed_at=? WHERE id=?",
                (remaining, round(pnl), "open" if remaining > 0 else "closed", None if remaining > 0 else db.now(), position_id))
     return {"remaining": remaining, "pnl": round(pnl)}
-
-
-def update_stop(position_id: int, stop: float) -> None:
-    p = _pos(db.one("SELECT * FROM positions WHERE id=?", (position_id,)))
-    p["plan"]["stop"] = stop
-    for r in p["plan"].get("exit_rules", []):
-        if r["type"] == "price_below":
-            r["level"] = stop
-    db.execute("UPDATE positions SET plan=? WHERE id=?", (db.dumps(p["plan"]), position_id))
 
 
 def open_positions() -> list[dict]:
@@ -202,12 +247,14 @@ def health_check() -> dict:
         if stop and p["buy_price"] > stop:
             r_mult = round((last - p["buy_price"]) / (p["buy_price"] - stop), 2)
         if r_mult is not None and r_mult >= 2 and stop and stop < p["buy_price"]:
-            notes.append("獲利已達 2R 以上：可把停損上移至成本（保本）或用五日線移動停利")
+            notes.append("獲利已達 2R 以上：系統收盤後會自動把停損上移至成本（保本）")
         items.append({
             "id": p["id"], "stock_id": p["stock_id"], "name": p["name"], "industry": ind_name,
             "setup": plan.get("setup_name", p["setup"]), "buy_date": p["buy_date"], "buy_price": p["buy_price"],
             "shares": p["remaining"], "last": last, "value": round(value), "pnl": round(pnl),
             "pnl_pct": round((last / p["buy_price"] - 1) * 100, 2), "stop": stop,
+            "stop_reason": plan.get("stop_reason"), "stop_history": plan.get("stop_history", []),
+            "entry_warnings": plan.get("entry_warnings", []),
             "to_stop_pct": None if not stop else round((last / stop - 1) * 100, 2),
             "next_target": next_t, "r_multiple": r_mult, "status": status, "notes": notes,
             "fundamental_grade": fund.get("grade") if fund else None,

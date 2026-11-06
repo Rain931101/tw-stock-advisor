@@ -160,3 +160,31 @@ def test_exit_rules_stop_and_ma5():
     # 盤中 11:00 跌破五日線還不出場（12:30 後才判斷）
     hits_am = portfolio.evaluate_exits(pos, df, datetime(2026, 11, 6, 11, 0), intraday=True)
     assert not any(h["type"] == "close_below_ma" for h in hits_am)
+
+
+# ---------- 停損由系統管理：只上不下 ----------
+def test_trail_stop_breakeven_at_2r():
+    from app.services import portfolio
+
+    closes = np.concatenate([np.full(30, 100.0), np.linspace(100, 125, 10)])
+    df = make_df(closes)
+    pos = {"buy_price": 100.0, "setup": "ma60_reclaim",
+           "plan": {"stop": 90.0, "initial_stop": 90.0, "state": {}, "exit_rules": []}}
+    new, reason = portfolio.trail_stop(pos, df)
+    assert new == 100.0 and "保本" in reason
+    # 已經在成本之上就不會再往下調
+    pos["plan"]["stop"] = 110.0
+    assert portfolio.trail_stop(pos, df) is None
+
+
+def test_confirm_buy_keeps_system_stop_and_warns_over_limit():
+    from app.services import portfolio
+
+    db.reset_for_tests()
+    db.execute("INSERT INTO stocks VALUES ('9999','測試','twse','半導體業')")
+    plan = {"stop": 90.0, "stop_reason": "關鍵低點", "setup_name": "季線站回", "exit_rules": []}
+    db.execute("INSERT INTO recommendations(created_at,trade_date,stock_id,name,setup,score,status,plan) VALUES (?,?,?,?,?,?,?,?)",
+               ("x", "2026-11-06", "9999", "測試", "ma60_reclaim", 80, "active", db.dumps(plan)))
+    r = portfolio.confirm_buy(1, "9999", price=100.0, shares=2000)
+    assert r["stop"] == 90.0  # 成交價不影響停損
+    assert r["warnings"] and "超過單筆可承受虧損" in r["warnings"][0]  # 2000 股 × 10 元 = 2 萬 > 1 萬

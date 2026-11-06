@@ -160,7 +160,6 @@ class BuyIn(BaseModel):
     shares: int
     rec_id: int | None = None
     buy_date: str | None = None
-    stop: float | None = None
 
 
 class SellIn(BaseModel):
@@ -169,16 +168,11 @@ class SellIn(BaseModel):
     reason: str = "手動賣出"
 
 
-class StopIn(BaseModel):
-    stop: float
-
-
 @app.post("/api/positions")
 def buy(body: BuyIn):
     if body.shares <= 0 or body.price <= 0:
         raise HTTPException(400, "股數與價格必須大於 0")
-    pid = portfolio.confirm_buy(body.rec_id, body.stock_id, body.price, body.shares, body.buy_date, body.stop)
-    return {"id": pid}
+    return portfolio.confirm_buy(body.rec_id, body.stock_id, body.price, body.shares, body.buy_date)
 
 
 @app.post("/api/positions/{pid}/sell")
@@ -187,12 +181,6 @@ def sell(pid: int, body: SellIn):
         return portfolio.record_sell(pid, body.price, body.shares, body.reason)
     except ValueError as e:
         raise HTTPException(400, str(e))
-
-
-@app.post("/api/positions/{pid}/stop")
-def set_stop(pid: int, body: StopIn):
-    portfolio.update_stop(pid, body.stop)
-    return {"ok": True}
 
 
 @app.get("/api/portfolio/health")

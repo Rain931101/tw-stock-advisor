@@ -157,5 +157,13 @@ def close_review(now: datetime | None = None) -> int:
         hits = portfolio.evaluate_exits(pos, df, None, intraday=False)
         _handle_exit_hits(pos, hits, float(df["close"].iloc[-1]), day, False)
         n += len(hits)
+        moved = portfolio.trail_stop(pos, df)
+        if moved:
+            old_stop = pos["plan"].get("stop")
+            portfolio.apply_stop(pos, moved[0], moved[1], day)
+            notifier.alert("info", f"停損上移：{pos['stock_id']} {pos['name']}",
+                           f"{old_stop} → {moved[0]}（{moved[1]}）\n明天起盤中以新停損監控",
+                           dedup_key=f"trail:{pos['id']}:{day}", stock_id=pos["stock_id"],
+                           ref_type="position", ref_id=pos["id"])
     notifier.flush()
     return n

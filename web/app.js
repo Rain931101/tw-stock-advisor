@@ -100,7 +100,7 @@ document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-buy]");
   if (b) {
     const r = recCache.find((x) => x.id == b.dataset.buy);
-    buyDialog({ rec_id: r.id, stock_id: r.stock_id, name: r.name, price: r.plan.price, shares: r.plan.sizing.shares, stop: r.plan.stop });
+    buyDialog({ rec_id: r.id, stock_id: r.stock_id, name: r.name, price: r.plan.price, shares: r.plan.sizing.shares, stop: r.plan.stop, stop_reason: r.plan.stop_reason });
   }
   const d = e.target.closest("[data-dismiss]");
   if (d) { await api(`/api/recommendations/${d.dataset.dismiss}/dismiss`, { method: "POST" }); loaders.recs(); }
@@ -123,11 +123,13 @@ function buyDialog(d) {
     <label>成交價<input name="price" type="number" step="0.01" required value="${d.price ?? ""}"></label>
     <label>股數（1 張 = 1000 股）<input name="shares" type="number" step="1" required value="${d.shares ?? 1000}"></label>
     <label>買進日期<input name="buy_date" type="date" value="${new Date().toISOString().slice(0, 10)}"></label>
-    <label>停損價（可依實際成本調整）<input name="stop" type="number" step="0.01" value="${d.stop ?? ""}"></label>
-    <p class="muted">確認後系統會開始盤中監控，符合停損、減碼、停利條件時推播 LINE。</p>`,
+    <p>停損：${d.stop ? `<b class="down">${fmt(d.stop)}</b>　<span class="muted">${esc(d.stop_reason || "")}</span>` : `<span class="muted">由系統依目前型態計算</span>`}</p>
+    <p class="muted">停損位置看的是「進場要素消失」的價位，跟你的成交價無關，由系統決定，之後收盤會依規則自動上移（只上不下）。確認後開始盤中監控，該停損、減碼、停利時推播 LINE。</p>`,
     async (v) => {
-      await api("/api/positions", { method: "POST", body: { rec_id: d.rec_id || null, stock_id: v.stock_id || d.stock_id, price: +v.price, shares: +v.shares, buy_date: v.buy_date, stop: v.stop ? +v.stop : null } });
-      toast("已記錄買進，開始監控"); loaders.recs(); loaders.portfolio();
+      const r = await api("/api/positions", { method: "POST", body: { rec_id: d.rec_id || null, stock_id: v.stock_id || d.stock_id, price: +v.price, shares: +v.shares, buy_date: v.buy_date } });
+      loaders.recs(); loaders.portfolio();
+      if (r.warnings?.length) setTimeout(() => dialog(`<h3>已記錄買進，但請注意</h3><ul class="list">${r.warnings.map((w) => `<li class="warn">${esc(w)}</li>`).join("")}</ul><p>系統停損：<b class="down">${fmt(r.stop)}</b>　<span class="muted">${esc(r.stop_reason || "")}</span></p>`, async () => {}), 300);
+      else toast(`已記錄買進，停損 ${fmt(r.stop)}，開始監控`);
     });
 }
 $("#add-pos").addEventListener("click", () => buyDialog({}));
@@ -149,14 +151,16 @@ loaders.portfolio = async () => {
      <dl class="plan">
        <dt>成本／現價</dt><dd>${fmt(p.buy_price)} → <b>${fmt(p.last)}</b>　${pct(p.pnl_pct)}　${signed(p.pnl)} 元</dd>
        <dt>持股</dt><dd>${fmt(p.shares, 0)} 股，市值 ${fmt(p.value, 0)}</dd>
-       <dt>停損</dt><dd class="down">${fmt(p.stop)}（距離 ${p.to_stop_pct ?? "—"}%）</dd>
+       <dt>停損（系統）</dt><dd><b class="down">${fmt(p.stop)}</b>（距離 ${p.to_stop_pct ?? "—"}%）<br><span class="muted">${esc(p.stop_reason || "")}</span></dd>
        <dt>下一個目標</dt><dd>${p.next_target ? `${fmt(p.next_target.price)}（${esc(p.next_target.label)}）` : "—"}</dd>
        <dt>R 倍數</dt><dd>${p.r_multiple ?? "—"}</dd>
        <dt>技術面</dt><dd>${esc(p.context.level || "")}・${esc(p.context.regime || "")}・格局 ${esc(p.context.structure || "")}　基本面 ${p.fundamental_grade || "—"}</dd>
      </dl>
      ${p.notes.length ? `<ul class="list">${p.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : `<p class="muted">進場要素仍在，依計畫續抱。</p>`}
+     ${(p.entry_warnings || []).map((w) => `<p class="warn">⚠️ ${esc(w)}</p>`).join("")}
      <details><summary>出場規則</summary>${exitRulesHtml(p.exit_rules)}</details>
-     <div class="btns"><button class="small" data-sell="${p.id}" data-sh="${p.shares}" data-px="${p.last}">記錄賣出／減碼</button><button class="small ghost" data-stop="${p.id}" data-cur="${p.stop}">調整停損</button></div>
+     ${(p.stop_history || []).length > 1 ? `<details><summary>停損移動紀錄</summary><ul class="list">${p.stop_history.map((h) => `<li>${h.date}：${fmt(h.stop)}（${esc(h.reason)}）</li>`).join("")}</ul></details>` : ""}
+     <div class="btns"><button class="small" data-sell="${p.id}" data-sh="${p.shares}" data-px="${p.last}">記錄賣出／減碼</button></div>
    </div>`).join("") || `<p class="muted">尚無持股。到「推薦」按「我已買進」，或用上方按鈕新增。</p>`;
   const t = await api("/api/trades");
   $("#trades").innerHTML = `<table><tr><th>時間</th><th>股票</th><th>買賣</th><th class="num">價格</th><th class="num">股數</th><th>原因</th></tr>
@@ -168,9 +172,6 @@ document.addEventListener("click", (e) => {
       <label>股數<input name="shares" type="number" required value="${s.dataset.sh}"></label>
       <label>原因<select name="reason"><option>停損：進場要素消失</option><option>減碼：跌破季線／五日線</option><option>停利：目標價達成</option><option>手動賣出</option></select></label>`,
     async (v) => { const r = await api(`/api/positions/${s.dataset.sell}/sell`, { method: "POST", body: { price: +v.price, shares: +v.shares, reason: v.reason } }); toast(`已記錄，損益 ${r.pnl} 元`); loaders.portfolio(); });
-  const st = e.target.closest("[data-stop]");
-  if (st) dialog(`<h3>調整停損價</h3><label>新的停損價<input name="stop" type="number" step="0.01" required value="${st.dataset.cur}"></label><p class="muted">講義：停損是為了更好的成本；不要情緒化亂移動停損。獲利 2R 以上可上移到成本。</p>`,
-    async (v) => { await api(`/api/positions/${st.dataset.stop}/stop`, { method: "POST", body: { stop: +v.stop } }); loaders.portfolio(); });
 });
 
 // ---------------- 個股 ----------------
@@ -202,7 +203,7 @@ async function openStock(sid) {
         ${sigs.map((s) => `<details ${s.triggered ? "open" : ""}><summary>${s.triggered ? "🟢 符合" : "⚪ 未符合"}　${esc(s.name)}</summary>
           <ul class="list">${s.reasons.map((x) => `<li>✓ ${esc(x)}</li>`).join("")}${s.warnings.map((x) => `<li class="warn">! ${esc(x)}</li>`).join("")}</ul>
           ${s.stop ? `<p class="muted">停損 ${fmt(s.stop)}（${esc(s.stop_reason)}）　目標 ${(s.targets || []).map((x) => fmt(x.price)).join("、") || "—"}</p>` : ""}
-          ${s.triggered ? `<button class="small" data-manualbuy="${sid}" data-px="${q?.price ?? ctx.close}" data-stop="${s.stop}">我已買進</button>` : ""}</details>`).join("")}
+          ${s.triggered ? `<button class="small" data-manualbuy="${sid}" data-px="${q?.price ?? ctx.close}" data-stop="${s.stop}" data-reason="${esc(s.stop_reason)}">我已買進</button>` : ""}</details>`).join("")}
         ${ctx.wave ? `<p class="muted">波段目標價：起漲 ${fmt(ctx.wave.rally_start)} → 壓力 ${fmt(ctx.wave.resistance)}，目標 ${fmt(ctx.wave.target)}，健康回檔 ${fmt(ctx.wave.healthy_pullback)}</p>` : ""}
       </div>
       <div class="card"><h3>基本面健檢（從 0 到 1 選出好公司）</h3>${f ? f.checks.map(checkHtml).join("") : "<p class='muted'>無資料</p>"}
@@ -238,7 +239,7 @@ function drawChart(bars, sig) {
 }
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-manualbuy]");
-  if (b) buyDialog({ stock_id: b.dataset.manualbuy, price: +b.dataset.px, shares: 1000, stop: +b.dataset.stop });
+  if (b) buyDialog({ stock_id: b.dataset.manualbuy, price: +b.dataset.px, shares: 1000, stop: +b.dataset.stop, stop_reason: b.dataset.reason });
 });
 let sugTimer;
 $("#q").addEventListener("input", (e) => {
