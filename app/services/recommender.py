@@ -6,6 +6,7 @@
   3. 技術面：符合進場型態，並計算停損（進場要素消失）、目標價、減碼規則
   4. 風控：進場價到停損的虧損不得超過單筆可承受虧損，否則不進場
 """
+import json
 import logging
 import threading
 import time
@@ -191,6 +192,21 @@ def remind_unconfirmed(day: str) -> int:
     notifier.alert("info", f"今天有 {len(rows)} 檔推薦尚未確認", f"{names}\n若已買進，請到網站「推薦」按「我已買進」；沒買可按「不買」。",
                    dedup_key=f"remind:{day}", level="info")
     return len(rows)
+
+
+def revalidate_active() -> int:
+    """風控設定改變後，重新檢查有效推薦；停損距離超出新的可承受範圍就標為失效。"""
+    rs = risk_settings()
+    n = 0
+    for r in db.query("SELECT id, plan FROM recommendations WHERE status='active'"):
+        p = json.loads(r["plan"])
+        if not p.get("stop"):
+            continue
+        s = risk.size_position(p["price"], p["stop"], rs["per_trade_capital"], rs["max_loss_per_trade"], rs["fee_discount"])
+        if (p.get("entry_low") or p["price"]) > s.max_entry:
+            db.execute("UPDATE recommendations SET status='invalid' WHERE id=?", (r["id"],))
+            n += 1
+    return n
 
 
 def expire_old(days: int = 3) -> None:

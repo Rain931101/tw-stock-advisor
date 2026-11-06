@@ -128,6 +128,8 @@ def set_settings_api(body: SettingsIn):
             c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?,?)", (k, db.dumps(v)))
     if changed:  # 勝率定義或門檻改了 → 背景重新訓練
         threading.Thread(target=winrate.train, daemon=True).start()
+    if {"per_trade_capital", "max_loss_per_trade", "fee_discount"} & set(data):
+        recommender.revalidate_active()  # 風控變嚴 → 不合格的推薦失效
     return get_settings_api()
 
 
