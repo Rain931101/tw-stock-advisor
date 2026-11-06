@@ -92,12 +92,14 @@ def test_no_entry_in_first_five_minutes():
 
 # ---------- 型態：季線站回 ----------
 def test_ma60_reclaim():
+    # 上升趨勢中急跌破季線、隔日強勢站回（舊測試的跌幅其實沒有跌破季線，型態根本不成立）
     up = 100 * 1.004 ** np.arange(300)
-    dip = up[-1] * np.array([0.97, 0.95, 0.93, 0.92, 0.93])
-    reclaim = [up[-1] * 1.0]
+    dip = up[-1] * np.array([0.95, 0.92, 0.89, 0.87, 0.86])
+    reclaim = [up[-1] * 0.93]
     df = make_df(np.concatenate([up, dip, reclaim]))
     res = technical.evaluate(df)
     sig = next(s for s in res["signals"] if s.setup == "ma60_reclaim")
+    assert sig.triggered, (sig.reasons, sig.warnings)
     assert any("季線" in r for r in sig.reasons)
     assert sig.stop < df["close"].iloc[-1]
     assert any(r["type"] == "ma_below" and r["action"] == "sell_half" for r in sig.exit_rules)
@@ -324,3 +326,10 @@ def test_costs_tax_and_min_fee():
     assert costs.fee(1000, 0.3, shares=1000) == 20  # 整股最低 20 元
     assert costs.fee(1000, 0.3, shares=10) == 1  # 零股最低 1 元
     assert costs.buy_cost(100, 1000, 1.0) == 100_142
+
+
+def test_untriggered_setup_has_no_stop():
+    flat = make_df(100 + np.sin(np.arange(300) / 5) * 2)
+    for sig in technical.evaluate(flat)["signals"]:
+        if not sig.triggered:
+            assert sig.stop is None and sig.targets == [] and sig.exit_rules == []

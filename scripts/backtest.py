@@ -1,5 +1,8 @@
 """純技術面歷史回測：驗證進出場規則（未套用基本面，因歷史財報需時間點對齊）。"""
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 讓 scripts/ 可直接執行
 from collections import defaultdict
 from datetime import timedelta
 

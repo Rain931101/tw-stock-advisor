@@ -141,7 +141,7 @@ def manual_plan(stock_id: str, price: float) -> dict:
     if len(df) >= 70:
         res = technical.evaluate(df)
         ctx = res["context"]
-        best = max(res["signals"], key=lambda s: (s.triggered, s.score), default=None)
+        best = max((s for s in res["signals"] if s.triggered), key=lambda s: s.score, default=None)
         if best and best.stop and best.stop < price:
             plan.update(best.to_dict())
             plan["setup_name"] = f"手動建立（參考：{best.name}）"

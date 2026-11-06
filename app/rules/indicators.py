@@ -215,6 +215,10 @@ def is_garbage_time(df: pd.DataFrame, lookback: int = 20) -> bool:
         return False
     win = df.iloc[-lookback:]
     prior = df.iloc[-lookback - 20 : -lookback]
+    # 垃圾時間是「震盪」裡的現象：之前必須是橫盤（角度在 ±30 度內），趨勢中的急回檔不算
+    prior_angle = trend_angle(df.iloc[-lookback - 40 : -lookback], 40) if len(df) >= lookback + 40 else None
+    if prior_angle is None or abs(prior_angle) >= 30:
+        return False
     hi_idx = win["high"].idxmax()
     lo_idx = win["low"].idxmin()
     made_high = win["high"].max() > prior["high"].max()

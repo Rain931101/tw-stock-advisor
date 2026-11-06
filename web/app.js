@@ -251,12 +251,12 @@ async function openStock(sid) {
       <div class="tile"><div class="k">量比</div><div class="v">${ctx.volume_ratio ?? "—"}</div><div class="muted">>1 代表今日量較大</div></div>
       <div class="tile"><div class="k">基本面</div><div class="v">${f ? `${f.grade}（${f.score}）` : "—"}</div><div class="muted">${f ? (f.pass ? "體質合格" : "未通過健檢") : esc(d.fundamental_error || "")}</div></div>
     </div>
-    <div class="card"><div id="chart"></div><p class="muted">K 線：紅漲綠跌；均線 5／20／60／240；虛線為最佳型態的停損（綠）與目標（紅）。</p></div>
+    <div class="card"><div id="chart"></div><p class="muted">K 線：紅漲綠跌；均線 5／20／60／240。${sigs.some((s) => s.triggered) ? "虛線為已成立型態的停損（綠）與目標（紅）。" : "目前沒有成立的進場型態，因此不畫停損與目標線。"}</p></div>
     <div class="grid two">
       <div class="card"><h3>進場型態檢查</h3>
         ${sigs.map((s) => `<details ${s.triggered ? "open" : ""}><summary>${s.triggered ? "🟢 符合" : "⚪ 未符合"}　${esc(s.name)}</summary>
           <ul class="list">${s.reasons.map((x) => `<li>✓ ${esc(x)}</li>`).join("")}${s.warnings.map((x) => `<li class="warn">! ${esc(x)}</li>`).join("")}</ul>
-          ${s.stop ? `<p class="muted">停損 ${fmt(s.stop)}（${esc(s.stop_reason)}）　目標 ${(s.targets || []).map((x) => fmt(x.price)).join("、") || "—"}</p>` : ""}
+          ${s.triggered && s.stop ? `<p class="muted">停損 ${fmt(s.stop)}（${esc(s.stop_reason)}）　目標 ${(s.targets || []).map((x) => fmt(x.price)).join("、") || "—"}</p>` : `<p class="muted">型態未成立，沒有進場要素，因此不提供停損與目標價。</p>`}
           ${s.triggered ? `<button class="small" data-manualbuy="${sid}" data-px="${q?.price ?? ctx.close}" data-stop="${s.stop}" data-reason="${esc(s.stop_reason)}">我已買進</button>` : ""}</details>`).join("")}
         ${ctx.wave ? `<p class="muted">波段目標價：起漲 ${fmt(ctx.wave.rally_start)} → 壓力 ${fmt(ctx.wave.resistance)}，目標 ${fmt(ctx.wave.target)}，健康回檔 ${fmt(ctx.wave.healthy_pullback)}</p>` : ""}
       </div>
@@ -265,7 +265,7 @@ async function openStock(sid) {
     </div>
     ${c ? `<div class="card"><h3>法人籌碼（張）</h3><p>5 日：外資 ${signed(c.summary.foreign["5d"])}、投信 ${signed(c.summary.trust["5d"])}、自營 ${signed(c.summary.dealer["5d"])}　｜　20 日：外資 ${signed(c.summary.foreign["20d"])}、投信 ${signed(c.summary.trust["20d"])}</p>
       <ul class="list">${c.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>` : ""}`;
-  drawChart(d.bars, sigs.find((s) => s.triggered) || sigs[0]);
+  drawChart(d.bars, sigs.find((s) => s.triggered));
 }
 function drawChart(bars, sig) {
   const el = $("#chart");

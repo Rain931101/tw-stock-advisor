@@ -354,6 +354,15 @@ def evaluate(df: pd.DataFrame, now: datetime | None = None, intraday: bool = Fal
         if intraday and ctx.t and ctx.t < time(9, 5):
             sig.triggered = False
         sig.score += {"強位階": 10, "中立位階": 0, "弱位階": -15}.get(ctx.level, 0)
+        close = float(ctx.row["close"])
+        if sig.triggered and (sig.stop is None or sig.stop >= close):
+            sig.triggered = False
+            sig.warnings.append("停損價不在現價之下，進場要素不成立")
+        if not sig.triggered:
+            # 型態沒成立就沒有「進場要素」，也就沒有停損／目標可言，不提供假設值以免誤用
+            sig.stop = sig.entry_low = sig.entry_high = sig.healthy_pullback = None
+            sig.stop_reason = ""
+            sig.targets, sig.exit_rules = [], []
         sigs.append(sig)
     r = ctx.row
     context = {
