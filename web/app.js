@@ -273,22 +273,23 @@ async function openStock(sid) {
     buyDialog({ rec_id: d.verdict.rec_id, stock_id: sid, name: d.info.name, price: p.price, shares: p.sizing.shares, stop: p.stop, stop_reason: p.stop_reason, margin: p.margin });
   });
 }
-function rateBar(rate, p) {
-  const pctv = Math.round(rate * 100);
-  const col = rate >= p.buy_rate ? "var(--up)" : rate < p.avoid_rate ? "var(--muted)" : "var(--warn)";
-  return `<div class="ratebar"><span class="fill" style="width:${pctv}%;background:${col}"></span>
-    <span class="mark" style="left:${p.avoid_rate * 100}%" title="不推薦門檻"></span><span class="mark" style="left:${p.buy_rate * 100}%" title="推薦門檻"></span></div>
-    <div class="ratebar-legend"><span>0%</span><span style="left:${p.avoid_rate * 100}%">不推 ${Math.round(p.avoid_rate * 100)}%</span><span style="left:${p.buy_rate * 100}%">推薦 ${Math.round(p.buy_rate * 100)}%</span><span>100%</span></div>`;
+function expBar(exp, p) {
+  // 期望報酬刻度：−3% ～ +4%
+  const lo = -3, hi = 4, pos = (x) => Math.max(0, Math.min(100, (x - lo) / (hi - lo) * 100));
+  const col = exp >= p.buy_exp ? "var(--up)" : exp <= p.avoid_exp ? "var(--muted)" : "var(--warn)";
+  return `<div class="ratebar"><span class="fill" style="width:${pos(exp)}%;background:${col}"></span>
+    <span class="mark" style="left:${pos(p.avoid_exp)}%"></span><span class="mark" style="left:${pos(p.buy_exp)}%"></span></div>
+    <div class="ratebar-legend"><span>${lo}%</span><span style="left:${pos(p.avoid_exp)}%">不推 ≤ ${p.avoid_exp}%</span><span style="left:${pos(p.buy_exp)}%">推薦 ≥ +${p.buy_exp}%</span><span>+${hi}%</span></div>`;
 }
 function winrateHtml(w) {
   if (!w) return `<p class="muted">勝率模型尚未訓練（到「勝率」頁按重新訓練）。</p>`;
   const p = w.params;
   return `<div class="wr">
-    <div class="wr-head"><span class="wr-rate">${Math.round(w.rate * 100)}%</span><span>歷史勝率　<span class="muted">每筆期望報酬 ${signed(w.exp, 2)}%</span></span></div>
-    ${rateBar(w.rate, p)}
-    <p class="muted">依據：${w.rule ? esc(w.rule.names.join(" + ")) + `（${w.rule.n.toLocaleString()} 筆，訓練 ${Math.round(w.rule.train_rate * 100)}%／驗證 ${Math.round(w.rule.test_rate * 100)}%）` : `沒有符合的條件組合，以全市場平均 ${Math.round(w.base_rate * 100)}% 計`}</p>
-    <p class="muted">勝率定義：隔日開盤買進，${p.hold_days} 個交易日內先到 +${Math.round(p.target * 100)}% 算贏、先到 −${Math.round(p.stop * 100)}% 算輸，到期看是否賺錢（已扣手續費與稅）。</p>
-    ${w.matched.length > 1 ? `<details><summary>其他符合的條件組合</summary><ul class="list">${w.matched.map((r) => `<li>${esc(r.names.join(" + "))}：${Math.round(r.rate * 100)}%（${r.n} 筆，期望 ${r.exp > 0 ? "+" : ""}${r.exp}%）</li>`).join("")}</ul></details>` : ""}
+    <div class="wr-head"><span class="wr-rate ${w.exp > 0 ? "up" : "down"}">${w.exp > 0 ? "+" : ""}${w.exp}%</span><span>每筆期望報酬　<span class="muted">勝率 ${Math.round(w.rate * 100)}%</span></span></div>
+    ${expBar(w.exp, p)}
+    <p class="muted">${w.decision === "buy" ? "依據（已通過驗證的推薦組合）" : w.n_rules > 1 ? `綜合 ${w.n_rules} 個符合的條件組合（依樣本數加權）；代表組合` : "依據"}：${w.rule ? esc(w.rule.names.join(" + ")) + `（${w.rule.n.toLocaleString()} 筆；訓練 期望 ${w.rule.train_exp > 0 ? "+" : ""}${w.rule.train_exp}%・勝率 ${Math.round(w.rule.train_rate * 100)}%／驗證 期望 ${w.rule.test_exp > 0 ? "+" : ""}${w.rule.test_exp}%・勝率 ${Math.round(w.rule.test_rate * 100)}%）` : `沒有符合的條件組合，以全市場平均計`}</p>
+    <p class="muted">交易定義：隔日開盤買進，${p.hold_days} 個交易日內先到 +${Math.round(p.target * 100)}% 停利、先到 −${Math.round(p.stop * 100)}% 停損，到期以收盤出場（已扣手續費與稅）。推薦需訓練與驗證兩期期望都 ≥ +${p.buy_exp}% 且勝率 ≥ ${Math.round(p.min_rate * 100)}%。</p>
+    ${w.matched.length > 1 ? `<details><summary>其他符合的條件組合</summary><ul class="list">${w.matched.map((r) => `<li>${esc(r.names.join(" + "))}：期望 ${r.exp > 0 ? "+" : ""}${r.exp}%、勝率 ${Math.round(r.rate * 100)}%（${r.n} 筆）</li>`).join("")}</ul></details>` : ""}
   </div>`;
 }
 function verdictHtml(v, sid) {
@@ -307,7 +308,7 @@ function verdictHtml(v, sid) {
     ${v.cautions.length ? `<ul class="list">${v.cautions.map((x) => `<li class="warn">! ${esc(x)}</li>`).join("")}</ul>` : ""}
     ${p && v.decision === "buy" ? `${planHtml(p)}${marginHtml(p.margin)}<details><summary>停利／停損／減碼規則</summary>${exitRulesHtml(p.exit_rules)}</details>
       <div class="btns"><button id="verdict-buy">我已買進</button></div>` : ""}
-    <p class="muted">判斷順序：歷史勝率（≥ 推薦門檻直接推薦、< 不推門檻不推薦）→ 基本面健檢 → 位階與格局 → 進場型態 → 風控 → 大盤與籌碼。僅為規則與統計判斷，不是投資建議。</p>
+    <p class="muted">判斷順序：歷史期望報酬（達推薦門檻直接推薦、≤ 不推門檻不推薦）→ 基本面健檢 → 位階與格局 → 進場型態 → 風控 → 大盤與籌碼。僅為規則與統計判斷，不是投資建議。</p>
   </div>`;
 }
 function drawChart(bars, sig) {
@@ -358,24 +359,26 @@ loaders.winrate = async () => {
   $("#wr-status").textContent = w.status?.running ? `訓練中：${w.status.message}` : (w.trained ? `最後訓練：${w.trained_at.replace("T", " ")}` : "尚未訓練");
   if (!w.trained) { $("#wr-body").innerHTML = `<p class="muted">按「重新訓練」用歷史資料計算各條件組合的勝率（約 10 秒）。</p>`; return; }
   const p = w.params, best = w.best;
-  const row = (r) => `<tr><td>${esc(r.names ? r.names.join(" + ") : r.name)}</td><td class="num"><b>${Math.round(r.rate * 100)}%</b></td>
-    <td class="num">${r.train_rate != null ? Math.round(r.train_rate * 100) + "%" : ""}</td><td class="num">${r.test_rate != null ? Math.round(r.test_rate * 100) + "%" : ""}</td>
-    <td class="num">${r.exp > 0 ? "+" : ""}${r.exp}%</td><td class="num">${r.n.toLocaleString()}</td></tr>`;
-  const head = `<tr><th>條件組合</th><th class="num">勝率</th><th class="num">訓練</th><th class="num">驗證</th><th class="num">期望報酬</th><th class="num">樣本</th></tr>`;
+  const row = (r) => `<tr><td>${esc(r.names ? r.names.join(" + ") : r.name)}</td><td class="num"><b class="${r.exp > 0 ? "up" : "down"}">${r.exp > 0 ? "+" : ""}${r.exp}%</b></td>
+    <td class="num">${Math.round(r.rate * 100)}%</td><td class="num">${r.train_rate != null ? Math.round(r.train_rate * 100) + "%" : ""}</td><td class="num">${r.test_rate != null ? Math.round(r.test_rate * 100) + "%" : ""}</td>
+    <td class="num">${r.n.toLocaleString()}</td></tr>`;
+  const head = `<tr><th>條件組合</th><th class="num">期望報酬</th><th class="num">勝率</th><th class="num">訓練勝率</th><th class="num">驗證勝率</th><th class="num">樣本</th></tr>`;
   $("#wr-body").innerHTML = `
     <div class="grid tiles">
       <div class="tile"><div class="k">全市場平均勝率</div><div class="v">${Math.round(w.base_rate.all * 100)}%</div><div class="muted">每筆期望 ${w.base_exp > 0 ? "+" : ""}${w.base_exp}%</div></div>
-      <div class="tile"><div class="k">兩期都最穩的組合</div><div class="v">${best ? Math.round(Math.min(best.train_rate, best.test_rate) * 100) + "%" : "—"}</div><div class="muted">${best ? esc(best.names.join(" + ")) : ""}</div></div>
-      <div class="tile"><div class="k">達推薦門檻（${Math.round(p.buy_rate * 100)}%）的組合</div><div class="v">${w.buy_rules.length}</div><div class="muted">訓練與驗證兩期都要達標、且期望報酬 > 0</div></div>
+      <div class="tile"><div class="k">兩期都最穩的組合</div><div class="v">${best ? "+" + Math.min(best.train_exp, best.test_exp) + "%" : "—"}</div><div class="muted">${best ? esc(best.names.join(" + ")) + `（勝率 ${Math.round(best.rate * 100)}%）` : ""}</div></div>
+      <div class="tile"><div class="k">達推薦門檻的組合</div><div class="v">${w.buy_count}</div><div class="muted">兩期期望 ≥ +${p.buy_exp}%、勝率 ≥ ${Math.round(p.min_rate * 100)}%</div></div>
+      <div class="tile"><div class="k">期望報酬 ≤ ${p.avoid_exp}% 的組合</div><div class="v">${w.avoid_count}</div><div class="muted">共 ${w.total.toLocaleString()} 種組合</div></div>
       <div class="tile"><div class="k">樣本</div><div class="v">${(w.samples.train + w.samples.test).toLocaleString()}</div><div class="muted">${w.samples.stocks} 檔，${w.period.from}～${w.period.to}</div></div>
     </div>
     <div class="card"><p>勝率定義：訊號日隔天開盤買進，${p.hold_days} 個交易日內先到 <b>+${Math.round(p.target * 100)}%</b> 算贏、先到 <b>−${Math.round(p.stop * 100)}%</b> 算輸，到期看扣成本後是否賺錢。
       訓練期 ${w.period.from}～${w.period.split}、驗證期 ${w.period.split}～${w.period.to}（驗證期是模型沒看過的資料）。</p>
-      ${!w.buy_rules.length ? `<p class="warn">目前沒有任何條件組合在兩期都達到 ${Math.round(p.buy_rate * 100)}% 勝率，所以不會出現「勝率推薦」。可以到設定頁調整門檻或勝率定義。</p>` : ""}</div>
+      <p>判斷以<b>每筆期望報酬</b>為主：以 +${Math.round(p.target * 100)}%／−${Math.round(p.stop * 100)}% 的賠率，勝率約 ${Math.round(p.stop / (p.stop + p.target) * 100)}% 就能損益兩平，勝率高不等於賺錢。</p>
+      ${!w.buy_count ? `<p class="warn">目前沒有條件組合達到推薦門檻，可以到設定頁調整。</p>` : ""}</div>
     ${w.buy_rules.length ? `<div class="card"><h3>達推薦門檻的組合</h3><div class="scroll"><table>${head}${w.buy_rules.map(row).join("")}</table></div></div>` : ""}
-    <div class="card"><h3>勝率最高的條件組合</h3><div class="scroll"><table>${head}${w.top.map(row).join("")}</table></div></div>
+    <div class="card"><h3>期望報酬最高的條件組合（以兩期中較差的一期排序）</h3><div class="scroll"><table>${head}${w.top.map(row).join("")}</table></div></div>
     <div class="card"><h3>單一條件的勝率</h3><div class="scroll"><table>${head}${w.single.map(row).join("")}</table></div></div>
-    <div class="card"><h3>勝率最低的條件組合</h3><div class="scroll"><table>${head}${w.worst.map(row).join("")}</table></div></div>`;
+    <div class="card"><h3>期望報酬最低的條件組合（避開）</h3><div class="scroll"><table>${head}${w.worst.map(row).join("")}</table></div></div>`;
 };
 $("#retrain").addEventListener("click", async () => { await api("/api/jobs/train", { method: "POST" }); toast("開始重新訓練"); setTimeout(loaders.winrate, 1500); setTimeout(loaders.winrate, 15000); });
 

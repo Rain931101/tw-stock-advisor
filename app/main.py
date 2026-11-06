@@ -64,8 +64,9 @@ class SettingsIn(BaseModel):
     margin_ratio_tpex: float | None = None
     margin_rate: float | None = None
     margin_maintenance: float | None = None
-    winrate_buy: float | None = None
-    winrate_avoid: float | None = None
+    winrate_buy_exp: float | None = None
+    winrate_min_rate: float | None = None
+    winrate_avoid_exp: float | None = None
     winrate_target: float | None = None
     winrate_stop: float | None = None
     winrate_hold: float | None = None
@@ -77,7 +78,7 @@ def get_settings_api():
     from app.rules.risk import max_stop_pct
     rs["max_stop_pct"] = round(max_stop_pct(rs["per_trade_capital"], rs["max_loss_per_trade"]) * 100, 2)
     wp = winrate.params()
-    rs.update(winrate_buy=wp["buy_rate"], winrate_avoid=wp["avoid_rate"], winrate_target=wp["target"],
+    rs.update(winrate_buy_exp=wp["buy_exp"], winrate_min_rate=wp["min_rate"], winrate_avoid_exp=wp["avoid_exp"], winrate_target=wp["target"],
               winrate_stop=wp["stop"], winrate_hold=wp["hold_days"])
     rs["warnings"] = []
     if rs["max_loss_per_trade"] >= rs["per_trade_capital"]:
@@ -100,13 +101,14 @@ SETTING_RULES = {  # 欄位: (最小, 最大, 中文名稱)
     "margin_ratio_tpex": (0, 0.9, "上櫃融資成數"),
     "margin_rate": (0, 0.3, "融資年利率（0.065 = 6.5%）"),
     "margin_maintenance": (1, 3, "追繳維持率（1.3 = 130%）"),
-    "winrate_buy": (0.3, 1, "推薦買進的勝率門檻（0.8 = 80%）"),
-    "winrate_avoid": (0, 0.9, "不推薦的勝率門檻（0.5 = 50%）"),
+    "winrate_buy_exp": (0, 20, "推薦：每筆期望報酬至少（%）"),
+    "winrate_min_rate": (0, 1, "推薦：勝率至少（0.5 = 50%）"),
+    "winrate_avoid_exp": (-20, 20, "不推薦：每筆期望報酬 ≤（%）"),
     "winrate_target": (0.01, 0.5, "勝率定義：停利（0.08 = +8%）"),
     "winrate_stop": (0.01, 0.3, "勝率定義：停損（0.05 = −5%）"),
     "winrate_hold": (3, 120, "勝率定義：最長持有交易日"),
 }
-WINRATE_DEFINITION_KEYS = {"winrate_target", "winrate_stop", "winrate_hold", "winrate_buy", "winrate_avoid"}
+WINRATE_DEFINITION_KEYS = {"winrate_target", "winrate_stop", "winrate_hold", "winrate_buy_exp", "winrate_min_rate", "winrate_avoid_exp"}
 
 
 @app.post("/api/settings")
@@ -190,7 +192,8 @@ def winrate_api(limit: int = 30):
             "period": m["period"], "samples": m["samples"], "base_rate": m["base_rate"], "base_exp": m.get("base_exp"),
             "best": m.get("best"), "single": m["single"],
             "top": rules[:limit], "buy_rules": [r for r in rules if r["reliable_buy"]][:limit],
-            "worst": sorted(rules, key=lambda r: r["rate"])[:10]}
+            "buy_count": sum(r["reliable_buy"] for r in rules), "avoid_count": sum(r["reliable_avoid"] for r in rules),
+            "total": len(rules), "worst": sorted(rules, key=lambda r: r["exp"])[:10]}
 
 
 @app.post("/api/recommendations/{rid}/dismiss")

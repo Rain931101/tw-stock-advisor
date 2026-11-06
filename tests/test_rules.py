@@ -376,12 +376,28 @@ def test_mine_rules_requires_both_periods_and_assess():
     data = pd.DataFrame({k: rng.random(n) < 0.3 for k in F.FEATURES})
     data["date"], data["sid"] = dates, rng.integers(0, 300, n).astype(str)
     good = data["high_60"] & data["vol_up"]
-    data["y"] = np.where(good, rng.random(n) < 0.9, rng.random(n) < 0.4).astype(float)
-    data["ret"] = np.where(data["y"] == 1, 0.08, -0.05)
-    p = {"hold_days": 20, "target": 0.08, "stop": 0.05, "buy_rate": 0.8, "avoid_rate": 0.5}
+    data["y"] = np.where(good, rng.random(n) < 0.9, rng.random(n) < 0.3).astype(float)
+    data["ret"] = np.where(data["y"] == 1, 0.08, -0.05)  # 期望：好組合 ≈ +6.7%、其他 ≈ −1.1%
+    p = {"hold_days": 20, "target": 0.08, "stop": 0.05, "buy_exp": 1.0, "min_rate": 0.5, "avoid_exp": 0.0}
     m = W.mine_rules(data, p)
     buy = [r for r in m["rules"] if r["reliable_buy"]]
-    assert buy and all({"high_60", "vol_up"} <= set(r["conds"]) for r in buy)
+    assert buy and {"high_60", "vol_up"} <= set(buy[0]["conds"])  # 期望報酬最高的規則一定包含真正有效的條件
     cond = {k: False for k in F.FEATURES} | {"high_60": True, "vol_up": True}
     assert W.assess(cond, m)["decision"] == "buy"
-    assert W.assess({k: False for k in F.FEATURES}, m)["decision"] == "avoid"  # 平均 40% < 50%
+    assert W.assess({k: False for k in F.FEATURES}, m)["decision"] == "avoid"  # 期望報酬為負 → 不推薦
+
+
+
+def test_low_winrate_but_positive_expectancy_is_not_avoided():
+    from app.rules import features as F
+    from app.services import winrate as W
+
+    rng = np.random.default_rng(1)
+    n = 6000
+    data = pd.DataFrame({k: rng.random(n) < 0.3 for k in F.FEATURES})
+    data["date"] = pd.to_datetime("2026-01-01") + pd.to_timedelta(rng.integers(0, 200, n), unit="D")
+    data["sid"] = rng.integers(0, 300, n).astype(str)
+    data["y"] = (rng.random(n) < 0.45).astype(float)  # 勝率 45%
+    data["ret"] = np.where(data["y"] == 1, 0.08, -0.05)  # 期望 ≈ +0.85% > 0
+    m = W.mine_rules(data, {"hold_days": 20, "target": 0.08, "stop": 0.05, "buy_exp": 1.0, "min_rate": 0.5, "avoid_exp": 0.0})
+    assert W.assess({k: False for k in F.FEATURES}, m)["decision"] == "neutral"  # 勝率不到五成但有賺 → 不會被擋

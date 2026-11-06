@@ -470,7 +470,7 @@ def winrate_plan(stock: dict, wr: dict, price: float, fund: dict | None, chips: 
     return {
         "stock_id": stock["stock_id"], "name": stock.get("name"), "industry": stock.get("industry"), "market": stock.get("market"),
         "setup": "winrate", "setup_name": "歷史勝率規則：" + " + ".join(rule["names"]),
-        "score": round(rule["rate"] * 100, 1), "price": price, "reward_risk": round(p["target"] / p["stop"], 2),
+        "score": round(60 + rule["exp"] * 10, 1), "price": price, "reward_risk": round(p["target"] / p["stop"], 2),
         "entry_low": risk.round_tick(price * 0.99), "entry_high": risk.round_tick(price * 1.01),
         "stop": stop, "stop_reason": f"訓練時的停損：進場價 −{p['stop']:.0%}",
         "targets": [{"price": target, "label": f"停利 +{p['target']:.0%}"}], "healthy_pullback": None,
@@ -492,13 +492,14 @@ def winrate_plan(stock: dict, wr: dict, price: float, fund: dict | None, chips: 
 
 
 def apply_winrate(verdict: dict, wr: dict | None, stock: dict, price: float, fund: dict | None, chips: dict | None) -> dict:
-    """使用者規則：歷史勝率 ≥ 買進門檻 → 推薦買進（不必所有型態條件都符合）；< 不推門檻 → 不推薦。"""
+    """以每筆期望報酬判斷：兩期期望 ≥ 推薦門檻且勝率 ≥ 最低勝率 → 推薦買進（不必符合講義型態）；
+    期望報酬 ≤ 不推門檻 → 不推薦；介於中間依講義規則。"""
     if not wr or not wr.get("trained"):
         verdict["winrate"] = None
         return verdict
     p = wr["params"]
     verdict["winrate"] = {
-        "rate": wr["rate"], "exp": wr["exp"], "decision": wr["decision"], "rule": wr["rule"],
+        "rate": wr["rate"], "exp": wr["exp"], "decision": wr["decision"], "rule": wr["rule"], "n_rules": wr.get("n_rules", 0),
         "matched": wr["matched"], "true_conds": wr["true_conds"], "base_rate": wr["base_rate"],
         "params": p, "trained_at": wr["trained_at"],
     }
@@ -512,10 +513,10 @@ def apply_winrate(verdict: dict, wr: dict | None, stock: dict, price: float, fun
             save_recommendation(plan, day, intraday=False, notify=False)
             row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, plan["stock_id"], plan["setup"]))
             verdict.update(decision="buy", label="建議買進", plan=plan, rec_id=row["id"] if row else None,
-                           summary=f"歷史勝率 {wr['rate']:.0%} ≥ {p['buy_rate']:.0%}：" + " + ".join(wr["rule"]["names"]))
+                           summary=f"歷史每筆期望報酬 {wr['exp']:+.2f}%、勝率 {wr['rate']:.0%}：" + " + ".join(wr["rule"]["names"]))
             if fund and not fund.get("pass"):
                 verdict["cautions"].append(f"基本面健檢未通過（{fund['grade']}）：依你的規則仍以勝率為準，請自行評估")
     elif wr["decision"] == "avoid":
         verdict.update(decision="avoid", label="不建議買進", plan=None,
-                       summary=f"歷史勝率 {wr['rate']:.0%}，低於 {p['avoid_rate']:.0%}，不推薦")
+                       summary=f"歷史每筆期望報酬 {wr['exp']:+.2f}%（≤ {p['avoid_exp']:+.1f}%），長期做下去是虧的，不推薦")
     return verdict

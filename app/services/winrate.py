@@ -25,7 +25,8 @@ log = logging.getLogger(__name__)
 HOLD, TARGET, STOP = 20, 0.08, 0.05
 ROUND_TRIP_COST = 0.001425 * 0.3 * 2 + 0.003
 MIN_TRAIN, MIN_TEST, MIN_DATES, MIN_STOCKS = 60, 25, 15, 15
-BUY_RATE, AVOID_RATE = 0.80, 0.50
+# 判斷以「每筆期望報酬」為主：勝率高不代表賺錢（小賺大賠也能有高勝率）
+BUY_EXP, MIN_RATE, AVOID_EXP = 1.0, 0.50, 0.0  # 推薦：兩期期望 ≥ +1%、勝率 ≥ 50%；不推薦：期望 ≤ 0
 MAX_ORDER = 3
 status = {"running": False, "message": "", "trained_at": None}
 _lock = threading.Lock()
@@ -35,7 +36,8 @@ def params() -> dict:
     """勝率定義與門檻（設定頁可調）。"""
     g = db.get_setting
     return {"hold_days": int(g("winrate_hold", HOLD)), "target": g("winrate_target", TARGET), "stop": g("winrate_stop", STOP),
-            "buy_rate": g("winrate_buy", BUY_RATE), "avoid_rate": g("winrate_avoid", AVOID_RATE)}
+            "buy_exp": g("winrate_buy_exp", BUY_EXP), "min_rate": g("winrate_min_rate", MIN_RATE),
+            "avoid_exp": g("winrate_avoid_exp", AVOID_EXP)}
 
 
 def label_trades(df: pd.DataFrame, hold: int = HOLD, target: float = TARGET, stop: float = STOP) -> pd.DataFrame:
@@ -144,10 +146,10 @@ def mine_rules(data: pd.DataFrame, p: dict | None = None) -> dict:
         r["rate"] = round((r["train_rate"] * r["train_n"] + r["test_rate"] * r["test_n"]) / (r["train_n"] + r["test_n"]), 4)
         r["n"] = r["train_n"] + r["test_n"]
         r["exp"] = round((r["train_exp"] * r["train_n"] + r["test_exp"] * r["test_n"]) / r["n"], 2)  # 每筆期望報酬 %
-        r["reliable_buy"] = (r["train_rate"] >= p["buy_rate"] and r["test_rate"] >= p["buy_rate"]
-                             and r["train_exp"] > 0 and r["test_exp"] > 0)
-        r["reliable_avoid"] = r["train_rate"] < p["avoid_rate"] and r["test_rate"] < p["avoid_rate"]
-    rules.sort(key=lambda r: (r["rate"], r["n"]), reverse=True)
+        r["reliable_buy"] = (min(r["train_exp"], r["test_exp"]) >= p["buy_exp"]
+                             and min(r["train_rate"], r["test_rate"]) >= p["min_rate"])
+        r["reliable_avoid"] = max(r["train_exp"], r["test_exp"]) <= p["avoid_exp"]
+    rules.sort(key=lambda r: (min(r["train_exp"], r["test_exp"]), r["n"]), reverse=True)
     return {
         "trained_at": db.now(),
         "params": p,
@@ -156,7 +158,7 @@ def mine_rules(data: pd.DataFrame, p: dict | None = None) -> dict:
         "samples": {"train": int(len(tr)), "test": int(len(te)), "stocks": int(data["sid"].nunique())},
         "base_rate": {"train": round(base_tr, 4), "test": round(base_te, 4), "all": round(float(data["y"].mean()), 4)},
         "base_exp": round(float(data["ret"].mean()) * 100, 2),
-        "best": max(rules, key=lambda r: min(r["train_rate"], r["test_rate"])) if rules else None,
+        "best": max(rules, key=lambda r: min(r["train_exp"], r["test_exp"])) if rules else None,
         "single": sorted([{"cond": r["conds"][0], "name": r["names"][0], "rate": r["rate"], "n": r["n"], "exp": r["exp"],
                            "train_rate": r["train_rate"], "test_rate": r["test_rate"]}
                           for r in rules if len(r["conds"]) == 1], key=lambda x: -x["rate"]),
@@ -220,20 +222,28 @@ def assess(cond: dict[str, bool], m: dict | None = None) -> dict:
     true = {k for k, v in cond.items() if v}
     matched = [r for r in m["rules"] if set(r["conds"]) <= true]
     buy = [r for r in matched if r["reliable_buy"]]
-    # 代表勝率：最具體（條件最多）且樣本足夠的規則中勝率最高者；沒有則用整體基準
+    # 代表規則：最具體（條件最多）的組合中樣本最多者；沒有則用全市場平均
     if matched:
         top_order = max(len(r["conds"]) for r in matched)
-        rep = max((r for r in matched if len(r["conds"]) == top_order), key=lambda r: (r["rate"], r["n"]))
+        rep = max((r for r in matched if len(r["conds"]) == top_order), key=lambda r: r["n"])
     else:
         rep = None
-    best_buy = max(buy, key=lambda r: (r["rate"], r["n"])) if buy else None
-    rate = best_buy["rate"] if best_buy else (rep["rate"] if rep else m["base_rate"]["all"])
-    exp = best_buy["exp"] if best_buy else (rep["exp"] if rep else m.get("base_exp"))
-    avoid_rate = m["params"]["avoid_rate"]
-    decision = "buy" if best_buy else ("avoid" if rate < avoid_rate else "neutral")
+    best_buy = max(buy, key=lambda r: (min(r["train_exp"], r["test_exp"]), r["n"])) if buy else None
+    # 綜合估計：符合的最具體組合依樣本數加權平均（不挑對自己有利的單一組合）
+    if matched:
+        top = [r for r in matched if len(r["conds"]) == top_order]
+        w = sum(r["n"] for r in top)
+        avg_rate = sum(r["rate"] * r["n"] for r in top) / w
+        avg_exp = round(sum(r["exp"] * r["n"] for r in top) / w, 2)
+        n_top = len(top)
+    else:
+        avg_rate, avg_exp, n_top = m["base_rate"]["all"], m.get("base_exp"), 0
+    rate = best_buy["rate"] if best_buy else avg_rate
+    exp = best_buy["exp"] if best_buy else avg_exp
+    decision = "buy" if best_buy else ("avoid" if exp is not None and exp <= m["params"]["avoid_exp"] else "neutral")
     return {
-        "trained": True, "decision": decision, "rate": rate, "exp": exp,
-        "rule": best_buy or rep, "matched": sorted(matched, key=lambda r: -r["rate"])[:5],
+        "trained": True, "decision": decision, "rate": round(rate, 4), "exp": exp, "n_rules": n_top,
+        "rule": best_buy or rep, "matched": sorted(matched, key=lambda r: -r["exp"])[:5],
         "true_conds": [F.FEATURES[k] for k in F.FEATURES if cond.get(k)],
         "base_rate": m["base_rate"]["all"], "params": m["params"], "trained_at": m["trained_at"],
         "period": m["period"],
