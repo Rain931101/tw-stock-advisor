@@ -45,6 +45,7 @@ def status():
         "finmind_token": bool(s.finmind_token),
         "in_session": monitor.in_session(),
         "fundamentals_cached": db.one("SELECT COUNT(*) AS n FROM cache WHERE key LIKE 'fundamental:%'")["n"],
+        "fundamentals": recommender.fund_status,
         "db_path": str(s.db_path.resolve()),
         "backups": db.backups(),
     }
@@ -304,7 +305,7 @@ JOBS = {
     "backfill": lambda: sync.backfill(),
     "scan": lambda: recommender.daily_scan(fetch_fundamentals=True),
     "tick": lambda: monitor.intraday_tick(force=True),
-    "fundamentals": lambda: recommender.refresh_fundamentals(60),
+    "fundamentals": lambda: recommender.refresh_all_fundamentals(),
     "close_review": lambda: monitor.close_review(),
     "backup": lambda: db.backup(),
 }

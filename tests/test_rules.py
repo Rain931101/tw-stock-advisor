@@ -278,3 +278,28 @@ def test_reset_portfolio_and_undo(monkeypatch, tmp_path):
     back = client.post("/api/portfolio/undo-reset").json()
     assert back == {"restored": 1, "trades": 2}
     assert db.one("SELECT remaining FROM positions WHERE id=1")["remaining"] == 500
+
+
+def test_finmind_bucket_reserves_quota_for_interactive():
+    import threading as th
+    import time as tm
+
+    from app.data import finmind
+
+    b = finmind._Bucket(20)
+    with finmind.background():
+        for _ in range(17):  # 85% 額度
+            b.take()
+    done = th.Event()
+
+    def bg():
+        with finmind.background():
+            b.take()
+        done.set()
+
+    th.Thread(target=bg, daemon=True).start()
+    tm.sleep(0.3)
+    assert not done.is_set()  # 背景已用完自己的份額，必須等待
+    t0 = tm.time()
+    b.take()  # 互動查詢仍可立即進行
+    assert tm.time() - t0 < 0.5

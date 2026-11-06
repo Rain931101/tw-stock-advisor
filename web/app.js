@@ -331,17 +331,17 @@ loaders.settings = async () => {
   const s = await api("/api/settings");
   for (const [k, v] of Object.entries(s)) { const i = $(`#settings-form [name=${k}]`); if (i) { if (i.type === "checkbox") i.checked = !!v; else i.value = v; } }
   $("#max-stop").innerHTML = `換算：進場點到停損點的距離不能超過 ${s.max_stop_pct}%，超過就不進場。` + (s.warnings || []).map((w) => `<br><span class="warn">⚠️ ${esc(w)}</span>`).join("");
+  await loadStatus();
+};
+async function loadStatus() {
   const st = await api("/api/status");
+  const f = st.fundamentals || {};
+  const fundLine = f.running ? `基本面更新中 ${f.done}/${f.total}${f.message ? `（${esc(f.message)}）` : ""}`
+    : f.total ? `基本面 ${f.done}/${f.total} ${esc(f.message || "")}` : "";
   $("#sys").innerHTML = `<table>
     <tr><th>最新資料日</th><td>${st.latest_date || "尚無資料"}</td></tr>
-    <tr><th>股票數</th><td>${st.stocks}</td></tr>
-    <tr><th>資料同步</th><td>${st.sync.running ? `進行中 ${st.sync.done}/${st.sync.total}（${esc(st.sync.message)}）` : esc(st.sync.message)}</td></tr>
-    <tr><th>已快取基本面</th><td>${st.fundamentals_cached} 檔</td></tr>
-    <tr><th>FinMind token</th><td>${st.finmind_token ? "✅ 已設定" : "⚠️ 未設定（額度較低）"}</td></tr>
-    <tr><th>LINE 推播</th><td>${st.line_configured ? "✅ 已設定" : "⚠️ 未設定，請在 .env 填入 LINE_CHANNEL_ACCESS_TOKEN 與 LINE_USER_ID"}</td></tr>
-    <tr><th>盤中監控</th><td>${st.in_session ? "🟢 盤中" : "收盤"}</td></tr>
-    <tr><th>資料庫</th><td><code>${esc(st.db_path)}</code></td></tr>
-    <tr><th>每日備份（留 7 份）</th><td>${st.backups.length ? st.backups.map((b) => `${esc(b.file)}（${b.size_mb} MB）`).join("<br>") : "尚無"}</td></tr></table>`;
+    <tr><th>資料同步</th><td>日 K：${st.sync.running ? `進行中 ${st.sync.done}/${st.sync.total}（${esc(st.sync.message)}）` : esc(st.sync.message === "idle" ? "已是最新" : st.sync.message)}${fundLine ? `<br>${fundLine}` : ""}</td></tr>
+    <tr><th>盤中監控</th><td>${st.in_session ? "🟢 盤中" : "收盤"}</td></tr></table>`;
 };
 // 設定：修改後自動儲存到後端資料庫（不必按儲存，也不受瀏覽器步進值限制）
 let saveTimer, dirty = false;
@@ -394,6 +394,7 @@ $$("[data-job]").forEach((b) => b.addEventListener("click", async () => {
 
 // ---------------- 啟動 ----------------
 setInterval(() => { if (current === "market") loaders.market(); if (current === "portfolio") loaders.portfolio(); }, 30000);
+setInterval(() => { if (current === "settings") loadStatus().catch(() => {}); }, 10000);
 pollAlerts();
 window.addEventListener("hashchange", () => { const t = location.hash.slice(1); if (t && t !== current && loaders[t]) show(t); });
 show(location.hash.slice(1) || "market");

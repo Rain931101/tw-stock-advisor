@@ -53,13 +53,16 @@ def start() -> None:
     _sched.add_job(_safe(after_close), "cron", day_of_week="mon-fri", hour=14, minute=40, id="after_close")
     # 三大法人與融資券約 15:00~21:00 陸續公布
     _sched.add_job(_safe(evening_scan), "cron", day_of_week="mon-fri", hour=21, minute=30, id="evening_scan")
-    _sched.add_job(_safe(recommender.refresh_fundamentals, 120), "cron", hour=22, minute=30, id="fund_daily")
-    _sched.add_job(_safe(recommender.refresh_fundamentals, 500), "cron", day_of_week="sat", hour=9, id="fund_weekly")
+    # 全市場基本面：每週六重新整理（7 天內已更新的會跳過）；每天晚上補上漏掉的
+    _sched.add_job(_safe(recommender.refresh_all_fundamentals), "cron", hour=22, minute=30, id="fund_daily")
+    _sched.add_job(_safe(recommender.refresh_all_fundamentals), "cron", day_of_week="sat", hour=9, id="fund_weekly")
     _sched.add_job(_safe(db.backup), "cron", hour=23, minute=50, id="backup")
     _sched.start()
     if not any(b["file"].endswith(f"{date.today():%Y%m%d}.db") for b in db.backups()):
         threading.Thread(target=_safe(db.backup), daemon=True).start()
     threading.Thread(target=_safe(sync.backfill), daemon=True).start()
+    if db.get_setting("fundamentals_full_pending", False):  # 上次全市場更新被中斷 → 自動接續
+        threading.Thread(target=_safe(recommender.refresh_all_fundamentals), daemon=True).start()
 
 
 def shutdown() -> None:

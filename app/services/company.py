@@ -2,7 +2,7 @@
 from datetime import date, timedelta
 
 from app import db
-from app.data import finmind
+from app.data import finmind, twse
 from app.rules import fundamental
 
 
@@ -17,12 +17,24 @@ def fundamental_report(stock_id: str, max_age_hours: float = 24 * 7) -> dict:
     balance = finmind.fetch("TaiwanStockBalanceSheet", stock_id, start_fin)
     cash = finmind.fetch("TaiwanStockCashFlowsStatement", stock_id, start_fin)
     revenue = finmind.fetch("TaiwanStockMonthRevenue", stock_id, start_rev)
-    per = finmind.fetch("TaiwanStockPER", stock_id, (date.today() - timedelta(days=10)).isoformat())
+    val = valuation_all().get(stock_id)
+    per = [val] if val else finmind.fetch("TaiwanStockPER", stock_id, (date.today() - timedelta(days=10)).isoformat())
     rep = fundamental.analyze(income, balance, cash, revenue, per)
     rep = db.jsonable(rep)
     rep["updated"] = db.now()
     db.cache_set(key, rep)
     return rep
+
+
+def valuation_all() -> dict[str, dict]:
+    """全市場估值（每日快取），省下每檔一次 FinMind 查詢。"""
+    hit = db.cache_get("valuation_all", 12)
+    if hit:
+        return hit
+    data = twse.fetch_valuation_all()
+    if data:
+        db.cache_set("valuation_all", data)
+    return data or (db.cache_get("valuation_all") or {})
 
 
 def chips(stock_id: str, days: int = 20, max_age_hours: float = 10) -> dict:

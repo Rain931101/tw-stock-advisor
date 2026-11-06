@@ -7,12 +7,15 @@
   4. 風控：進場價到停損的虧損不得超過單筆可承受虧損，否則不進場
 """
 import logging
+import threading
+import time
 from datetime import datetime, timedelta
 
 import pandas as pd
 
 from app import db
 from app.config import get_settings
+from app.data import finmind
 from app.data.finmind import QuotaExceeded
 from app.rules import risk, technical
 from app.services import company, market, notifier
@@ -257,20 +260,62 @@ def daily_scan(fetch_fundamentals: bool = True, max_fundamental_fetch: int = 60)
             "fundamental_fetched": fetched}
 
 
+fund_status = {"running": False, "done": 0, "total": 0, "message": ""}
+_fund_lock = threading.Lock()
+FRESH_HOURS = 24 * 7
+
+
+def all_active_stocks() -> list[str]:
+    """近 10 個交易日有成交的上市櫃普通股（排除 ETF），成交金額大的先更新。"""
+    dates = db.query("SELECT DISTINCT date FROM prices ORDER BY date DESC LIMIT 10")
+    if not dates:
+        return []
+    rows = db.query(
+        """SELECT p.stock_id, SUM(p.value) AS v FROM prices p JOIN stocks s USING(stock_id)
+           WHERE p.date>=? AND p.stock_id NOT LIKE '00%' AND s.market IN ('twse','tpex')
+           GROUP BY p.stock_id ORDER BY v DESC""", (dates[-1]["date"],))
+    return [r["stock_id"] for r in rows]
+
+
+def refresh_all_fundamentals(force: bool = False) -> dict:
+    """更新全部股票的基本面。FinMind 免費額度有限：額度用完會等待後自動接續；
+    中斷（例如重啟）後再次執行會跳過 7 天內已更新的股票，從中斷處繼續。"""
+    if not _fund_lock.acquire(blocking=False):
+        return fund_status
+    try:
+        db.set_setting("fundamentals_full_pending", True)
+        ids = all_active_stocks()
+        fresh = lambda sid: db.cache_get(f"fundamental:{sid}", FRESH_HOURS) is not None  # noqa: E731
+        todo = ids if force else [s for s in ids if not fresh(s)]
+        fund_status.update(running=True, total=len(ids), done=len(ids) - len(todo), message="")
+        for sid in todo:
+            for attempt in range(1000):
+                try:
+                    with finmind.background():
+                        company.fundamental_report(sid, max_age_hours=0 if force else FRESH_HOURS)
+                    break
+                except QuotaExceeded:
+                    resume = (datetime.now() + timedelta(minutes=15)).strftime("%H:%M")
+                    fund_status["message"] = f"FinMind 額度用完，{resume} 自動繼續"
+                    time.sleep(15 * 60)
+                except Exception as e:
+                    log.warning("fundamental %s: %s", sid, e)
+                    if attempt >= 2:
+                        break
+                    time.sleep(10)
+            fund_status["done"] += 1
+            left = fund_status["total"] - fund_status["done"]
+            per_hour = 600 if get_settings().finmind_token else 300
+            fund_status["message"] = f"約剩 {left * 4 / per_hour:.1f} 小時" if left else ""
+        fund_status["message"] = "全部完成 ✓"
+        db.set_setting("fundamentals_full_pending", False)
+        return dict(fund_status)
+    finally:
+        fund_status["running"] = False
+        _fund_lock.release()
+
+
 def refresh_fundamentals(limit: int = 80) -> int:
-    """背景慢慢更新母體的基本面（FinMind 有額度限制）。"""
-    rs = risk_settings()
-    n = 0
-    for st in universe(rs["min_avg_volume"], rs["min_price"]):
-        if db.cache_get(f"fundamental:{st['stock_id']}", 24 * 7) is not None:
-            continue
-        try:
-            company.fundamental_report(st["stock_id"])
-        except QuotaExceeded:
-            break
-        except Exception as e:
-            log.warning("fundamental %s: %s", st["stock_id"], e)
-        n += 1
-        if n >= limit:
-            break
-    return n
+    """（相容舊排程）改為呼叫全市場更新。"""
+    refresh_all_fundamentals()
+    return fund_status["done"]
