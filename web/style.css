@@ -73,3 +73,4 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px
 @media (max-width: 640px) { .brand .sub { display: none; } #chart { height: 320px; } }
 .form label.row { display: flex; align-items: center; gap: 8px; color: var(--ink); }
 .chip.up { background: color-mix(in srgb, var(--up) 15%, transparent); color: var(--up); }
+button.danger-text { color: var(--danger); }

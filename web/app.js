@@ -349,6 +349,24 @@ async function saveSettings() {
 $("#settings-form").addEventListener("input", () => { dirty = true; saveState("尚未儲存…"); clearTimeout(saveTimer); saveTimer = setTimeout(saveSettings, 800); });
 $("#settings-form").addEventListener("change", () => { if (dirty) saveSettings(); });
 $("#settings-form").addEventListener("submit", (e) => { e.preventDefault(); saveSettings(); });
+$("#reset-settings").addEventListener("click", () => dialog(`<h3>重新設定</h3>
+    <p>把資金控管、選股母體、融資參數全部恢復成預設值：</p>
+    <ul class="list"><li>帳戶資金 1,000,000、每筆部位 100,000、單筆最大虧損 10,000（講義範例）</li>
+    <li>手續費 3 折、20 日均量 1,000 張、最低股價 10 元</li>
+    <li>上市融資 6 成、上櫃 5 成、年利率 6.5%、追繳維持率 130%</li></ul>
+    <p class="muted">只會重設參數，不會刪除持股、交易紀錄、推薦與通知。重設後可以按「復原上次的設定」改回來。</p>`,
+  async () => {
+    clearTimeout(saveTimer); dirty = false;
+    const r = await api("/api/settings/reset", { method: "POST" });
+    await loaders.settings();
+    $("#undo-reset").classList.toggle("hidden", !r.can_undo);
+    saveState("已恢復預設值 ✓");
+  }));
+$("#undo-reset").addEventListener("click", async () => {
+  await api("/api/settings/undo-reset", { method: "POST" });
+  $("#undo-reset").classList.add("hidden");
+  await loaders.settings(); saveState("已復原上次的設定 ✓");
+});
 window.addEventListener("beforeunload", (e) => { if (dirty) { saveSettings(); e.preventDefault(); e.returnValue = ""; } });
 $$("[data-job]").forEach((b) => b.addEventListener("click", async () => {
   const r = await api(`/api/jobs/${b.dataset.job}`, { method: "POST" });

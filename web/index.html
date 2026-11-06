@@ -87,7 +87,7 @@
           <label>融資年利率（0.065 = 6.5%）<input name="margin_rate" type="number" step="any" inputmode="decimal"></label>
           <label>追繳維持率（1.3 = 130%）<input name="margin_maintenance" type="number" step="any" inputmode="decimal"></label>
           <p class="muted">預設為台股常見條件，請依自己券商的信用交易契約修改。</p>
-          <div class="btns"><button>儲存</button><span id="save-state" class="muted"></span></div>
+          <div class="btns"><button>儲存</button><button type="button" class="ghost danger-text" id="reset-settings">重新設定（恢復預設值）</button><button type="button" class="ghost hidden" id="undo-reset">復原上次的設定</button><span id="save-state" class="muted"></span></div>
         </form>
       </div>
       <div class="card">

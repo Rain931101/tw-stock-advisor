@@ -240,3 +240,19 @@ def test_settings_persist_any_value_and_reject_invalid(monkeypatch):
     bad = client.post("/api/settings", json={"fee_discount": 3, "capital": 999})
     assert bad.status_code == 400 and "手續費折數" in bad.json()["detail"]
     assert client.get("/api/settings").json()["capital"] == 123456  # 有錯就整批不寫
+
+
+def test_reset_settings_and_undo(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    db.reset_for_tests()
+    monkeypatch.setattr(main.scheduler, "start", lambda: None)
+    client = TestClient(main.app)
+    client.post("/api/settings", json={"capital": 50000, "fee_discount": 0.28})
+    r = client.post("/api/settings/reset").json()
+    assert r["capital"] == 1_000_000 and r["fee_discount"] == 0.3 and r["can_undo"]
+    back = client.post("/api/settings/undo-reset").json()
+    assert back["capital"] == 50000 and back["fee_discount"] == 0.28
+    assert client.post("/api/settings/undo-reset").status_code == 404  # 只能復原一次

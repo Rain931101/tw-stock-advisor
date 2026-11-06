@@ -110,6 +110,28 @@ def set_settings_api(body: SettingsIn):
     return get_settings_api()
 
 
+@app.post("/api/settings/reset")
+def reset_settings_api():
+    """恢復預設值（.env 或程式預設）。重設前先把目前設定存一份，可以復原。"""
+    current = {r["key"]: r["value"] for r in db.query("SELECT key, value FROM settings")}
+    if current:
+        db.cache_set("settings_before_reset", current)
+    db.execute("DELETE FROM settings")
+    return {**get_settings_api(), "can_undo": bool(current)}
+
+
+@app.post("/api/settings/undo-reset")
+def undo_reset_api():
+    snap = db.cache_get("settings_before_reset")
+    if not snap:
+        raise HTTPException(404, "沒有可以復原的設定")
+    with db.tx() as c:
+        for k, v in snap.items():
+            c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?,?)", (k, v))
+    db.execute("DELETE FROM cache WHERE key='settings_before_reset'")
+    return get_settings_api()
+
+
 # ---------------- 大盤 ----------------
 _mk_cache: dict = {}
 _mk_lock = threading.Lock()
