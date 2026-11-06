@@ -41,7 +41,7 @@ def universe(min_avg_volume: float, min_price: float) -> list[dict]:
         """SELECT p.stock_id, s.name, s.market, s.industry, AVG(p.volume) AS avg_vol, SUM(p.value) AS sum_value,
                   (SELECT close FROM prices WHERE stock_id=p.stock_id ORDER BY date DESC LIMIT 1) AS last_close
            FROM prices p JOIN stocks s USING(stock_id)
-           WHERE p.date>=? GROUP BY p.stock_id
+           WHERE p.date>=? AND p.stock_id NOT LIKE '00%' GROUP BY p.stock_id
            HAVING avg_vol>=? AND last_close>=? ORDER BY sum_value DESC""",
         (since, min_avg_volume, min_price),
     )

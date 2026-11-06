@@ -218,7 +218,8 @@ def health_check() -> dict:
         by_ind[ind_name] = by_ind.get(ind_name, 0) + value
         tech = technical.evaluate(df) if len(df) >= 70 else {"context": None, "signals": []}
         ctx = tech["context"] or {}
-        fund = db.cache_get(f"fundamental:{p['stock_id']}")
+        is_etf = p["stock_id"].startswith("00")  # ETF 沒有公司財報，不做基本面健檢
+        fund = None if is_etf else db.cache_get(f"fundamental:{p['stock_id']}")
         notes, status = [], "ok"
         if stop and last <= stop:
             status = "danger"
@@ -257,7 +258,7 @@ def health_check() -> dict:
             "entry_warnings": plan.get("entry_warnings", []),
             "to_stop_pct": None if not stop else round((last / stop - 1) * 100, 2),
             "next_target": next_t, "r_multiple": r_mult, "status": status, "notes": notes,
-            "fundamental_grade": fund.get("grade") if fund else None,
+            "fundamental_grade": "ETF 不適用" if is_etf else (fund.get("grade") if fund else None),
             "context": {k: ctx.get(k) for k in ("regime", "level", "structure", "angle", "volume_ratio")},
             "exit_rules": plan.get("exit_rules", []), "targets": targets,
             "realized_pnl": p["realized_pnl"],
