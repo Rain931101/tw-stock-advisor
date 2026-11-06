@@ -164,10 +164,8 @@ $("#reset-portfolio").addEventListener("click", async () => {
   const n = h.positions.length;
   dialog(`<h3>重新設定持股健檢</h3>
     <p>會清空<b>全部持股（目前 ${n} 筆）與交易紀錄</b>，已實現損益、勝率也會歸零，盤中監控停止追蹤這些持股。</p>
-    <p class="muted">不影響推薦、通知與設定。清空前會自動備份資料庫，清空後可以按「復原清空前的持股」改回來。</p>
-    <label>請輸入「清空」確認<input name="confirm" required autocomplete="off"></label>`,
-    async (v) => {
-      if (v.confirm.trim() !== "清空") throw new Error("請輸入「清空」兩個字確認");
+    <p class="muted">不影響推薦、通知與設定。清空前會自動備份資料庫，清空後可以按「復原清空前的持股」改回來。</p>`,
+    async () => {
       const r = await api("/api/portfolio/reset", { method: "POST" });
       $("#undo-portfolio").classList.toggle("hidden", !r.can_undo);
       toast(r.cleared || r.trades ? `已清空 ${r.cleared} 筆持股、${r.trades} 筆交易紀錄` : "目前沒有持股資料");
