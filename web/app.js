@@ -1,0 +1,310 @@
+// 台股選股顧問前端（無建置步驟的原生 JS）
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : Number(v).toLocaleString("zh-TW", { maximumFractionDigits: d, minimumFractionDigits: 0 });
+const pct = (v) => v === null || v === undefined ? "—" : `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${fmt(v)}%</span>`;
+const signed = (v, d = 0) => v === null || v === undefined ? "—" : `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${fmt(v, d)}</span>`;
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  if (!r.ok) { const t = await r.text(); throw new Error(t); }
+  return r.json();
+}
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden"); setTimeout(() => t.classList.add("hidden"), 2600); }
+
+// ---------------- 分頁 ----------------
+const loaders = {};
+let current = "market";
+function show(tab) {
+  current = tab;
+  $$("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  $$(".tab").forEach((s) => s.classList.toggle("on", s.id === `tab-${tab}`));
+  loaders[tab]?.();
+  history.replaceState(null, "", `#${tab}`);
+}
+$$("#tabs button").forEach((b) => b.addEventListener("click", () => show(b.dataset.tab)));
+
+setInterval(() => { $("#clock").textContent = new Date().toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }); }, 1000);
+
+// ---------------- 大盤 ----------------
+loaders.market = async () => {
+  const m = await api("/api/market").catch((e) => ({ errors: [e.message] }));
+  const idx = m.indices || {};
+  const tiles = Object.values(idx).map((x) => `<div class="tile"><div class="k">${x.name}　${esc(x.time || "")}</div>
+     <div class="v ${x.change_pct > 0 ? "up" : x.change_pct < 0 ? "down" : ""}">${fmt(x.price)}</div><div>${pct(x.change_pct)}　高 ${fmt(x.high)}／低 ${fmt(x.low)}</div></div>`);
+  const v = m.verdict || {};
+  tiles.push(`<div class="tile"><div class="k">今日盤勢判斷</div><div class="v stance ${v.stance === "進攻" ? "up" : v.stance === "防守" ? "down" : ""}">${v.stance || "—"}</div><div class="muted">綜合分數 ${v.score ?? "—"}</div></div>`);
+  $("#idx").innerHTML = tiles.join("");
+  $("#verdict").innerHTML = `<h3>大盤判斷依據</h3><ul class="list">${(v.signals || []).map((s) => `<li>${esc(s)}</li>`).join("")}</ul>
+     <p class="muted">${esc(v.note || "")}</p>${(m.errors || []).length ? `<p class="muted">部分資料暫時無法取得：${esc(m.errors.join("；"))}</p>` : ""}`;
+  const s = m.spot, f = m.futures, o = m.options, fx = m.fx, b = m.basis;
+  $("#chips-mk").innerHTML = `<table>
+    <tr><th>三大法人現貨（${s?.date || "—"}，億元）</th><td class="num">外資 ${signed(s?.foreign, 1)}　投信 ${signed(s?.trust, 1)}　自營 ${signed(s?.dealer, 1)}</td></tr>
+    <tr><th>外資台指期淨未平倉（口）</th><td class="num">${signed(f?.net_oi)}（${signed(f?.change)}）</td></tr>
+    <tr><th>外資選擇權 BC／BP 未平倉變化</th><td class="num">BC ${signed(o?.bc_change)}　BP ${signed(o?.bp_change)}</td></tr>
+    <tr><th>期現貨價差（近月 − 加權）</th><td class="num">${b?.basis ?? "—"}（前日 ${b?.prev ?? "—"}）</td></tr>
+    <tr><th>美元／台幣</th><td class="num">${fx?.usd_twd ?? "—"}（${signed(fx?.change, 3)}）</td></tr></table>`;
+  $("#sectors").innerHTML = `<table><tr><th>族群</th><th class="num">漲跌</th><th class="num">5 日</th><th class="num">資金占比</th><th class="num">上漲家數</th><th>龍頭</th></tr>
+    ${(m.sectors || []).map((x) => `<tr><td>${esc(x.industry)}</td><td class="num">${pct(x.change_pct)}</td><td class="num">${pct(x.change_5d)}</td><td class="num">${x.value_share}%</td><td class="num">${x.breadth}%</td><td><a href="#" data-sid="${x.leader}">${x.leader}</a></td></tr>`).join("")}</table>`;
+  $("#topvalue").innerHTML = `<table><tr><th>代號</th><th>名稱</th><th>族群</th><th class="num">收盤</th><th class="num">漲跌</th><th class="num">成交值(億)</th></tr>
+    ${(m.top_value || []).map((x) => `<tr><td><a href="#" data-sid="${x.stock_id}">${x.stock_id}</a></td><td>${esc(x.name)}</td><td>${esc(x.industry)}</td><td class="num">${fmt(x.close)}</td><td class="num">${pct(x.change_pct)}</td><td class="num">${fmt(x.value_e, 1)}</td></tr>`).join("")}</table>`;
+};
+
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("[data-sid]");
+  if (a) { e.preventDefault(); openStock(a.dataset.sid); }
+});
+
+// ---------------- 推薦 ----------------
+function planHtml(p) {
+  const sz = p.sizing || {};
+  const tg = (p.targets || []).map((t) => `${fmt(t.price)}<span class="muted">（${esc(t.label)}）</span>`).join("<br>") || "—";
+  return `<dl class="plan">
+    <dt>現價</dt><dd>${fmt(p.price)}</dd>
+    <dt>進場區</dt><dd><b>${fmt(p.entry_low)} ~ ${fmt(p.entry_high)}</b>　<span class="muted">可承受虧損內最高 ${fmt(sz.max_entry)}</span></dd>
+    <dt>停損</dt><dd class="down"><b>${fmt(p.stop)}</b>　<span class="muted">${esc(p.stop_reason)}</span></dd>
+    <dt>目標</dt><dd>${tg}</dd>
+    ${p.healthy_pullback ? `<dt>健康回檔價</dt><dd>${fmt(p.healthy_pullback)}</dd>` : ""}
+    <dt>建議部位</dt><dd>${fmt(sz.shares, 0)} 股（約 ${fmt(sz.cost, 0)} 元），打到停損約虧 ${fmt(sz.loss_at_stop, 0)} 元（${sz.stop_pct}%）</dd>
+  </dl>`;
+}
+function exitRulesHtml(rules) {
+  const act = { sell_all: "出場", sell_half: "減碼 50%", watch_pullback: "停利觀察", notify: "提醒", target_hit: "停利" };
+  return `<ul class="list">${(rules || []).map((r) => `<li><span class="chip">${act[r.action] || r.action}</span>${esc(r.label)}${r.level ? `（${fmt(r.level)}）` : ""}</li>`).join("")}</ul>`;
+}
+function recCard(r) {
+  const p = r.plan;
+  const fund = p.fundamental;
+  return `<div class="card rec">
+    <div class="head"><div class="title"><a href="#" data-sid="${r.stock_id}">${r.stock_id} ${esc(r.name)}</a></div><div class="score">分數 ${fmt(r.score, 1)}｜${r.trade_date}</div></div>
+    <div><span class="chip">${esc(p.setup_name)}</span>${(p.tags || []).map((t) => `<span class="chip">${esc(t)}</span>`).join("")}<span class="chip">${esc(p.industry || "")}</span></div>
+    ${planHtml(p)}
+    <details open><summary>為什麼推薦</summary><ul class="list">${p.reasons.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>
+    ${p.warnings.length ? `<details><summary class="warn">注意事項（${p.warnings.length}）</summary><ul class="list">${p.warnings.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}
+    <details><summary>停利／停損／減碼規則</summary>${exitRulesHtml(p.exit_rules)}</details>
+    ${fund ? `<details><summary>基本面 ${fund.grade}（${fund.score}）</summary>${fund.highlights.map(checkHtml).join("")}</details>` : ""}
+    ${p.chips ? `<details><summary>法人籌碼</summary><p class="muted">5 日：外資 ${signed(p.chips.summary.foreign["5d"])} 張、投信 ${signed(p.chips.summary.trust["5d"])} 張</p><ul class="list">${p.chips.notes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}
+    <div class="btns">${r.status === "active" ? `<button data-buy="${r.id}">我已買進</button><button class="ghost" data-dismiss="${r.id}">不買</button>` : `<span class="muted">狀態：${r.status}</span>`}</div>
+  </div>`;
+}
+let recCache = [];
+loaders.recs = async () => {
+  recCache = await api(`/api/recommendations?status=${$("#rec-filter").value}`);
+  $("#recs").innerHTML = recCache.map(recCard).join("") || `<p class="muted">目前沒有符合兩份講義條件的標的。系統會在收盤後（14:40、21:30）與盤中自動掃描，符合就推播通知。</p>`;
+};
+$("#rec-filter").addEventListener("change", loaders.recs);
+$("#run-scan").addEventListener("click", async () => { await api("/api/jobs/scan", { method: "POST" }); toast("已開始掃描，約需數分鐘（基本面有 API 額度限制）"); });
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-buy]");
+  if (b) {
+    const r = recCache.find((x) => x.id == b.dataset.buy);
+    buyDialog({ rec_id: r.id, stock_id: r.stock_id, name: r.name, price: r.plan.price, shares: r.plan.sizing.shares, stop: r.plan.stop });
+  }
+  const d = e.target.closest("[data-dismiss]");
+  if (d) { await api(`/api/recommendations/${d.dataset.dismiss}/dismiss`, { method: "POST" }); loaders.recs(); }
+});
+
+// ---------------- 對話框 ----------------
+function dialog(html, onSubmit) {
+  const dlg = $("#dlg"), f = $("#dlg-form");
+  f.innerHTML = html + `<div class="btns"><button value="ok">確認</button><button class="ghost" value="cancel" formnovalidate>取消</button></div>`;
+  f.onsubmit = async (e) => {
+    if (e.submitter?.value !== "ok") return;
+    e.preventDefault();
+    try { await onSubmit(Object.fromEntries(new FormData(f))); dlg.close(); } catch (err) { toast("失敗：" + err.message); }
+  };
+  dlg.showModal();
+}
+function buyDialog(d) {
+  dialog(`<h3>確認買進 ${esc(d.stock_id)} ${esc(d.name || "")}</h3>
+    ${d.rec_id ? "" : `<label>股票代號<input name="stock_id" required value="${esc(d.stock_id || "")}"></label>`}
+    <label>成交價<input name="price" type="number" step="0.01" required value="${d.price ?? ""}"></label>
+    <label>股數（1 張 = 1000 股）<input name="shares" type="number" step="1" required value="${d.shares ?? 1000}"></label>
+    <label>買進日期<input name="buy_date" type="date" value="${new Date().toISOString().slice(0, 10)}"></label>
+    <label>停損價（可依實際成本調整）<input name="stop" type="number" step="0.01" value="${d.stop ?? ""}"></label>
+    <p class="muted">確認後系統會開始盤中監控，符合停損、減碼、停利條件時推播 LINE。</p>`,
+    async (v) => {
+      await api("/api/positions", { method: "POST", body: { rec_id: d.rec_id || null, stock_id: v.stock_id || d.stock_id, price: +v.price, shares: +v.shares, buy_date: v.buy_date, stop: v.stop ? +v.stop : null } });
+      toast("已記錄買進，開始監控"); loaders.recs(); loaders.portfolio();
+    });
+}
+$("#add-pos").addEventListener("click", () => buyDialog({}));
+
+// ---------------- 持股健檢 ----------------
+const STATUS = { ok: "健康", warn: "注意", danger: "危險" };
+loaders.portfolio = async () => {
+  const h = await api("/api/portfolio/health");
+  const s = h.summary;
+  $("#pf-summary").innerHTML = [
+    ["持股市值", fmt(s.market_value, 0)], ["資金使用率", s.exposure_pct == null ? "—" : s.exposure_pct + "%"],
+    ["未實現損益", signed(s.unrealized_pnl)], ["全部打到停損的虧損", fmt(s.risk_at_stop, 0)],
+    ["已實現損益", signed(s.realized_pnl)], ["勝率", s.win_rate == null ? "—" : `${s.win_rate}%（${s.closed_trades} 筆）`],
+  ].map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  $("#pf-notes").innerHTML = h.notes.length ? `<div class="card"><h3>投資組合提醒</h3><ul class="list">${h.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>` : "";
+  $("#positions").innerHTML = h.positions.map((p) => `<div class="card status-${p.status}">
+     <div class="rec head"><div class="title"><a href="#" data-sid="${p.stock_id}">${p.stock_id} ${esc(p.name)}</a> <span class="chip">${STATUS[p.status]}</span></div>
+       <div class="score">${esc(p.setup)}｜${p.buy_date}</div></div>
+     <dl class="plan">
+       <dt>成本／現價</dt><dd>${fmt(p.buy_price)} → <b>${fmt(p.last)}</b>　${pct(p.pnl_pct)}　${signed(p.pnl)} 元</dd>
+       <dt>持股</dt><dd>${fmt(p.shares, 0)} 股，市值 ${fmt(p.value, 0)}</dd>
+       <dt>停損</dt><dd class="down">${fmt(p.stop)}（距離 ${p.to_stop_pct ?? "—"}%）</dd>
+       <dt>下一個目標</dt><dd>${p.next_target ? `${fmt(p.next_target.price)}（${esc(p.next_target.label)}）` : "—"}</dd>
+       <dt>R 倍數</dt><dd>${p.r_multiple ?? "—"}</dd>
+       <dt>技術面</dt><dd>${esc(p.context.level || "")}・${esc(p.context.regime || "")}・格局 ${esc(p.context.structure || "")}　基本面 ${p.fundamental_grade || "—"}</dd>
+     </dl>
+     ${p.notes.length ? `<ul class="list">${p.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : `<p class="muted">進場要素仍在，依計畫續抱。</p>`}
+     <details><summary>出場規則</summary>${exitRulesHtml(p.exit_rules)}</details>
+     <div class="btns"><button class="small" data-sell="${p.id}" data-sh="${p.shares}" data-px="${p.last}">記錄賣出／減碼</button><button class="small ghost" data-stop="${p.id}" data-cur="${p.stop}">調整停損</button></div>
+   </div>`).join("") || `<p class="muted">尚無持股。到「推薦」按「我已買進」，或用上方按鈕新增。</p>`;
+  const t = await api("/api/trades");
+  $("#trades").innerHTML = `<table><tr><th>時間</th><th>股票</th><th>買賣</th><th class="num">價格</th><th class="num">股數</th><th>原因</th></tr>
+    ${t.map((x) => `<tr><td>${x.ts.replace("T", " ")}</td><td>${x.stock_id} ${esc(x.name)}</td><td class="${x.side === "buy" ? "up" : "down"}">${x.side === "buy" ? "買進" : "賣出"}</td><td class="num">${fmt(x.price)}</td><td class="num">${fmt(x.shares, 0)}</td><td>${esc(x.reason)}</td></tr>`).join("")}</table>`;
+};
+document.addEventListener("click", (e) => {
+  const s = e.target.closest("[data-sell]");
+  if (s) dialog(`<h3>記錄賣出</h3><label>成交價<input name="price" type="number" step="0.01" required value="${s.dataset.px}"></label>
+      <label>股數<input name="shares" type="number" required value="${s.dataset.sh}"></label>
+      <label>原因<select name="reason"><option>停損：進場要素消失</option><option>減碼：跌破季線／五日線</option><option>停利：目標價達成</option><option>手動賣出</option></select></label>`,
+    async (v) => { const r = await api(`/api/positions/${s.dataset.sell}/sell`, { method: "POST", body: { price: +v.price, shares: +v.shares, reason: v.reason } }); toast(`已記錄，損益 ${r.pnl} 元`); loaders.portfolio(); });
+  const st = e.target.closest("[data-stop]");
+  if (st) dialog(`<h3>調整停損價</h3><label>新的停損價<input name="stop" type="number" step="0.01" required value="${st.dataset.cur}"></label><p class="muted">講義：停損是為了更好的成本；不要情緒化亂移動停損。獲利 2R 以上可上移到成本。</p>`,
+    async (v) => { await api(`/api/positions/${st.dataset.stop}/stop`, { method: "POST", body: { stop: +v.stop } }); loaders.portfolio(); });
+});
+
+// ---------------- 個股 ----------------
+let chart;
+function checkHtml(c) {
+  const icon = { good: "✅", warn: "⚠️", bad: "⛔", info: "・" }[c.status] || "・";
+  return `<div class="check"><span>${icon}</span><span><b>${esc(c.name)}</b>　<span class="muted">${esc(c.detail)}</span></span></div>`;
+}
+async function openStock(sid) {
+  show("stock");
+  $("#q").value = sid;
+  $("#stock-body").innerHTML = `<p class="muted">載入 ${sid}…（第一次查詢需抓財報，約 10 秒）</p>`;
+  let d;
+  try { d = await api(`/api/stock/${sid}`); } catch (e) { $("#stock-body").innerHTML = `<p class="danger">${esc(e.message)}</p>`; return; }
+  const q = d.quote, t = d.technical, f = d.fundamental, c = d.chips, ctx = t?.context || {};
+  const sigs = (t?.signals || []).sort((a, b) => b.triggered - a.triggered || b.score - a.score);
+  $("#stock-body").innerHTML = `
+    <div class="grid tiles">
+      <div class="tile"><div class="k">${esc(d.info.name)}（${d.info.market === "tpex" ? "上櫃" : "上市"}・${esc(d.info.industry)}）</div>
+        <div class="v">${fmt(q?.price ?? ctx.close)}</div><div>${q ? pct(q.prev_close ? (q.price / q.prev_close - 1) * 100 : null) : ""}　${esc(q?.time || "")}</div></div>
+      <div class="tile"><div class="k">位階／角度</div><div class="v" style="font-size:18px">${esc(ctx.level || "—")}</div><div>${esc(ctx.regime || "")} ${ctx.angle ?? ""}°</div></div>
+      <div class="tile"><div class="k">格局</div><div class="v" style="font-size:18px">${{ uptrend: "高過高、低不過低", downtrend: "低過低、高不過高", turning_up: "高過高（可能轉多）", turning_down: "低過低（可能做頭）", range: "震盪" }[ctx.structure] || "—"}</div></div>
+      <div class="tile"><div class="k">量比</div><div class="v">${ctx.volume_ratio ?? "—"}</div><div class="muted">>1 代表今日量較大</div></div>
+      <div class="tile"><div class="k">基本面</div><div class="v">${f ? `${f.grade}（${f.score}）` : "—"}</div><div class="muted">${f ? (f.pass ? "體質合格" : "未通過健檢") : esc(d.fundamental_error || "")}</div></div>
+    </div>
+    <div class="card"><div id="chart"></div><p class="muted">K 線：紅漲綠跌；均線 5／20／60／240；虛線為最佳型態的停損（綠）與目標（紅）。</p></div>
+    <div class="grid two">
+      <div class="card"><h3>進場型態檢查</h3>
+        ${sigs.map((s) => `<details ${s.triggered ? "open" : ""}><summary>${s.triggered ? "🟢 符合" : "⚪ 未符合"}　${esc(s.name)}</summary>
+          <ul class="list">${s.reasons.map((x) => `<li>✓ ${esc(x)}</li>`).join("")}${s.warnings.map((x) => `<li class="warn">! ${esc(x)}</li>`).join("")}</ul>
+          ${s.stop ? `<p class="muted">停損 ${fmt(s.stop)}（${esc(s.stop_reason)}）　目標 ${(s.targets || []).map((x) => fmt(x.price)).join("、") || "—"}</p>` : ""}
+          ${s.triggered ? `<button class="small" data-manualbuy="${sid}" data-px="${q?.price ?? ctx.close}" data-stop="${s.stop}">我已買進</button>` : ""}</details>`).join("")}
+        ${ctx.wave ? `<p class="muted">波段目標價：起漲 ${fmt(ctx.wave.rally_start)} → 壓力 ${fmt(ctx.wave.resistance)}，目標 ${fmt(ctx.wave.target)}，健康回檔 ${fmt(ctx.wave.healthy_pullback)}</p>` : ""}
+      </div>
+      <div class="card"><h3>基本面健檢（從 0 到 1 選出好公司）</h3>${f ? f.checks.map(checkHtml).join("") : "<p class='muted'>無資料</p>"}
+        ${f?.metrics ? `<p class="muted">本益比 ${f.metrics.per ?? "—"}・股價淨值比 ${f.metrics.pbr ?? "—"}・殖利率 ${f.metrics.dividend_yield ?? "—"}%</p>` : ""}</div>
+    </div>
+    ${c ? `<div class="card"><h3>法人籌碼（張）</h3><p>5 日：外資 ${signed(c.summary.foreign["5d"])}、投信 ${signed(c.summary.trust["5d"])}、自營 ${signed(c.summary.dealer["5d"])}　｜　20 日：外資 ${signed(c.summary.foreign["20d"])}、投信 ${signed(c.summary.trust["20d"])}</p>
+      <ul class="list">${c.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>` : ""}`;
+  drawChart(d.bars, sigs.find((s) => s.triggered) || sigs[0]);
+}
+function drawChart(bars, sig) {
+  const el = $("#chart");
+  if (!el || !window.LightweightCharts || !bars.length) return;
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const css = getComputedStyle(document.documentElement);
+  chart = LightweightCharts.createChart(el, {
+    autoSize: true, layout: { background: { color: "transparent" }, textColor: css.getPropertyValue("--muted") },
+    grid: { vertLines: { color: dark ? "#222833" : "#f0f1f4" }, horzLines: { color: dark ? "#222833" : "#f0f1f4" } },
+    rightPriceScale: { mode: LightweightCharts.PriceScaleMode.Logarithmic }, timeScale: { borderVisible: false },
+  });
+  const up = css.getPropertyValue("--up").trim(), down = css.getPropertyValue("--down").trim();
+  const k = chart.addCandlestickSeries({ upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down });
+  k.setData(bars.map((b) => ({ time: b.date, open: b.open, high: b.high, low: b.low, close: b.close })));
+  const colors = { ma5: "#f2a33a", ma20: "#7c5cff", ma60: "#2aa1d8", ma240: "#999" };
+  for (const [key, color] of Object.entries(colors)) {
+    const s = chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    s.setData(bars.filter((b) => b[key] != null).map((b) => ({ time: b.date, value: b[key] })));
+  }
+  const vol = chart.addHistogramSeries({ priceScaleId: "vol", priceFormat: { type: "volume" } });
+  chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+  vol.setData(bars.map((b) => ({ time: b.date, value: b.volume, color: b.close >= b.open ? up + "66" : down + "66" })));
+  if (sig?.stop) k.createPriceLine({ price: sig.stop, color: down, lineStyle: 2, title: "停損" });
+  (sig?.targets || []).slice(0, 2).forEach((t) => k.createPriceLine({ price: t.price, color: up, lineStyle: 2, title: t.label.slice(0, 6) }));
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-manualbuy]");
+  if (b) buyDialog({ stock_id: b.dataset.manualbuy, price: +b.dataset.px, shares: 1000, stop: +b.dataset.stop });
+});
+let sugTimer;
+$("#q").addEventListener("input", (e) => {
+  clearTimeout(sugTimer);
+  const v = e.target.value.trim();
+  if (!v) return $("#suggest").classList.add("hidden");
+  sugTimer = setTimeout(async () => {
+    const list = await api(`/api/search?q=${encodeURIComponent(v)}`);
+    $("#suggest").innerHTML = list.map((x) => `<div data-sid="${x.stock_id}">${x.stock_id} ${esc(x.name)} <span class="muted">${esc(x.industry)}</span></div>`).join("");
+    $("#suggest").classList.toggle("hidden", !list.length);
+  }, 200);
+});
+$("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") { $("#suggest").classList.add("hidden"); openStock(e.target.value.trim()); } });
+document.addEventListener("click", (e) => { if (!e.target.closest(".toolbar")) $("#suggest").classList.add("hidden"); });
+
+// ---------------- 通知 ----------------
+const ICON = { buy: "🟢", stop: "🔴", reduce: "🟠", target: "🎯", info: "ℹ️", market: "📊" };
+let lastAlertId = 0;
+loaders.alerts = async () => {
+  const list = await api("/api/alerts");
+  $("#alerts").innerHTML = list.map((a) => `<div class="alert ${a.read ? "" : "unread"}"><div>${ICON[a.kind] || "•"}</div>
+     <div><b>${esc(a.title)}</b><pre>${esc(a.message)}</pre></div><div class="muted">${a.ts.replace("T", " ").slice(5, 16)}${a.sent_line ? "<br>已推 LINE" : ""}</div></div>`).join("") || `<p class="muted">尚無通知。</p>`;
+};
+$("#mark-read").addEventListener("click", async () => { await api("/api/alerts/read", { method: "POST" }); pollAlerts(); loaders.alerts(); });
+$("#ask-notify").addEventListener("click", () => Notification.requestPermission().then((p) => toast(p === "granted" ? "已開啟瀏覽器通知" : "未允許通知")));
+async function pollAlerts() {
+  try {
+    const list = await api("/api/alerts?limit=50");
+    const unread = list.filter((a) => !a.read).length;
+    $("#badge").textContent = unread; $("#badge").classList.toggle("hidden", !unread);
+    const fresh = list.filter((a) => a.id > lastAlertId);
+    if (lastAlertId && fresh.length && "Notification" in window && Notification.permission === "granted") {
+      fresh.slice(0, 3).forEach((a) => new Notification(a.title, { body: a.message }));
+    }
+    if (list.length) lastAlertId = Math.max(lastAlertId, list[0].id);
+    if (fresh.length && current === "alerts") loaders.alerts();
+  } catch { /* 離線時略過 */ }
+}
+setInterval(pollAlerts, 15000);
+
+// ---------------- 設定 ----------------
+loaders.settings = async () => {
+  const s = await api("/api/settings");
+  for (const [k, v] of Object.entries(s)) { const i = $(`#settings-form [name=${k}]`); if (i) i.value = v; }
+  $("#max-stop").textContent = `換算：進場點到停損點的距離不能超過 ${s.max_stop_pct}%，超過就不進場。`;
+  const st = await api("/api/status");
+  $("#sys").innerHTML = `<table>
+    <tr><th>最新資料日</th><td>${st.latest_date || "尚無資料"}</td></tr>
+    <tr><th>股票數</th><td>${st.stocks}</td></tr>
+    <tr><th>資料同步</th><td>${st.sync.running ? `進行中 ${st.sync.done}/${st.sync.total}（${esc(st.sync.message)}）` : esc(st.sync.message)}</td></tr>
+    <tr><th>已快取基本面</th><td>${st.fundamentals_cached} 檔</td></tr>
+    <tr><th>FinMind token</th><td>${st.finmind_token ? "✅ 已設定" : "⚠️ 未設定（額度較低）"}</td></tr>
+    <tr><th>LINE 推播</th><td>${st.line_configured ? "✅ 已設定" : "⚠️ 未設定，請在 .env 填入 LINE_CHANNEL_ACCESS_TOKEN 與 LINE_USER_ID"}</td></tr>
+    <tr><th>盤中監控</th><td>${st.in_session ? "🟢 盤中" : "收盤"}</td></tr></table>`;
+};
+$("#settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = Object.fromEntries([...new FormData(e.target)].map(([k, v]) => [k, +v]));
+  await api("/api/settings", { method: "POST", body }); toast("已儲存"); loaders.settings();
+});
+$$("[data-job]").forEach((b) => b.addEventListener("click", async () => {
+  const r = await api(`/api/jobs/${b.dataset.job}`, { method: "POST" });
+  toast(b.dataset.job === "test_line" ? (r.ok ? "LINE 推播成功" : r.configured ? "LINE 推播失敗，請檢查 token" : "尚未設定 LINE") : "已開始執行");
+  setTimeout(loaders.settings, 1500);
+}));
+
+// ---------------- 啟動 ----------------
+setInterval(() => { if (current === "market") loaders.market(); if (current === "portfolio") loaders.portfolio(); }, 30000);
+pollAlerts();
+show(location.hash.slice(1) || "market");

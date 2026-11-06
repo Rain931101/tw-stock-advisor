@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>台股選股顧問</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">台股選股顧問 <span class="sub">好公司 × 好價格 × 好紀律</span></div>
+  <nav id="tabs">
+    <button data-tab="market" class="on">大盤</button>
+    <button data-tab="recs">推薦</button>
+    <button data-tab="portfolio">持股健檢</button>
+    <button data-tab="stock">個股分析</button>
+    <button data-tab="alerts">通知 <span id="badge" class="badge hidden">0</span></button>
+    <button data-tab="settings">設定</button>
+  </nav>
+  <div id="clock" class="clock"></div>
+</header>
+
+<main>
+  <!-- 大盤 -->
+  <section id="tab-market" class="tab on">
+    <div id="idx" class="grid tiles"></div>
+    <div class="card" id="verdict"></div>
+    <div class="grid two">
+      <div class="card"><h3>籌碼與匯率</h3><div id="chips-mk"></div></div>
+      <div class="card"><h3>強勢族群（成交金額加權）</h3><div id="sectors"></div></div>
+    </div>
+    <div class="card"><h3>成交金額前 30（找出龍頭帶動的主題）</h3><div id="topvalue" class="scroll"></div></div>
+  </section>
+
+  <!-- 推薦 -->
+  <section id="tab-recs" class="tab">
+    <div class="toolbar">
+      <select id="rec-filter"><option value="active">有效推薦</option><option value="bought">已買進</option><option value="expired">已過期</option><option value="invalid">已失效</option><option value="all">全部</option></select>
+      <button class="ghost" id="run-scan">立即掃描全市場</button>
+      <span class="muted" id="rec-note"></span>
+    </div>
+    <div id="recs" class="grid cards"></div>
+  </section>
+
+  <!-- 持股 -->
+  <section id="tab-portfolio" class="tab">
+    <div class="toolbar"><button id="add-pos">＋ 新增持股（非推薦買進）</button></div>
+    <div id="pf-summary" class="grid tiles"></div>
+    <div id="pf-notes"></div>
+    <div id="positions"></div>
+    <div class="card"><h3>交易紀錄</h3><div id="trades" class="scroll"></div></div>
+  </section>
+
+  <!-- 個股 -->
+  <section id="tab-stock" class="tab">
+    <div class="toolbar">
+      <input id="q" placeholder="輸入代號或名稱，例如 2330、台光電" autocomplete="off">
+      <div id="suggest" class="suggest hidden"></div>
+    </div>
+    <div id="stock-body"><p class="muted">輸入股票代號查看技術面型態、基本面健檢與法人籌碼。</p></div>
+  </section>
+
+  <!-- 通知 -->
+  <section id="tab-alerts" class="tab">
+    <div class="toolbar"><button class="ghost" id="mark-read">全部標為已讀</button><button class="ghost" id="ask-notify">開啟瀏覽器通知</button></div>
+    <div id="alerts"></div>
+  </section>
+
+  <!-- 設定 -->
+  <section id="tab-settings" class="tab">
+    <div class="grid two">
+      <div class="card">
+        <h3>資金控管</h3>
+        <form id="settings-form" class="form">
+          <label>帳戶資金<input name="capital" type="number" step="1000"></label>
+          <label>每筆部位資金<input name="per_trade_capital" type="number" step="1000"></label>
+          <label>單筆最大可承受虧損<input name="max_loss_per_trade" type="number" step="500"></label>
+          <label>手續費折數<input name="fee_discount" type="number" step="0.05"></label>
+          <label>選股母體：20 日均量下限（張）<input name="min_avg_volume" type="number"></label>
+          <label>選股母體：最低股價<input name="min_price" type="number" step="1"></label>
+          <p class="muted" id="max-stop"></p>
+          <button>儲存</button>
+        </form>
+      </div>
+      <div class="card">
+        <h3>系統狀態</h3>
+        <div id="sys"></div>
+        <div class="btns">
+          <button class="ghost" data-job="backfill">回補歷史資料</button>
+          <button class="ghost" data-job="fundamentals">更新基本面</button>
+          <button class="ghost" data-job="tick">立即跑一次盤中監控</button>
+          <button class="ghost" data-job="test_line">測試 LINE 推播</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>本系統把兩份講義的規則程式化，輸出僅為規則篩選結果，不是投資建議；股票投資有賺有賠，請自行判斷。</footer>
+
+<dialog id="dlg"><form method="dialog" id="dlg-form" class="form"></form></dialog>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

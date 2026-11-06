@@ -1,0 +1,13 @@
+services:
+  advisor:
+    build: .
+    container_name: tw-stock-advisor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      TZ: Asia/Taipei
+      DB_PATH: /app/data/advisor.db
+    volumes:
+      - ./data:/app/data

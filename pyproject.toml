@@ -1,0 +1,22 @@
+[project]
+name = "tw-stock-advisor"
+version = "0.1.0"
+description = "依《從0到1選出一家好公司》與《可以用的技術分析》規則打造的台股選股推薦、持股健檢與即時通知系統"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.28",
+    "pandas>=2.2",
+    "numpy>=2.1",
+    "apscheduler>=3.10,<4",
+    "pydantic-settings>=2.6",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
