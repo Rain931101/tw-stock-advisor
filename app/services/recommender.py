@@ -64,6 +64,11 @@ def build_plan(stock: dict, sig: technical.Signal, context: dict, fund: dict | N
     """把訊號整理成完整操作計畫；不符合風控回傳 None。"""
     if sig.stop is None or price <= sig.stop:
         return None
+    # 講義：進單一定要思考能操作的空間——最遠目標的報酬／風險至少 1.5
+    risk_ps = price - sig.stop
+    rr = [(t["price"] - price) / risk_ps for t in sig.targets]
+    if not rr or max(rr) < 1.5:
+        return None
     sizing = risk.size_position(price, sig.stop, rs["per_trade_capital"], rs["max_loss_per_trade"], rs["fee_discount"])
     entry_high = min(sig.entry_high or price, sizing.max_entry)
     if (sig.entry_low or price) > sizing.max_entry:
@@ -97,7 +102,7 @@ def build_plan(stock: dict, sig: technical.Signal, context: dict, fund: dict | N
     return {
         "stock_id": stock["stock_id"], "name": stock.get("name"), "industry": stock.get("industry"),
         "market": stock.get("market"), "setup": sig.setup, "setup_name": sig.name,
-        "score": round(score, 1), "price": price,
+        "score": round(score, 1), "price": price, "reward_risk": round(max(rr), 2),
         "entry_low": sig.entry_low, "entry_high": risk.round_tick(entry_high),
         "stop": sig.stop, "stop_reason": sig.stop_reason,
         "targets": sig.targets, "healthy_pullback": sig.healthy_pullback,
@@ -133,6 +138,17 @@ def save_recommendation(plan: dict, trade_date: str, intraday: bool) -> int | No
         stock_id=plan["stock_id"], level="high", ref_type="recommendation", ref_id=rid,
     )
     return rid
+
+
+def remind_unconfirmed(day: str) -> int:
+    """收盤後提醒：今天的推薦你買了嗎？買了請到網站確認，系統才會開始監控停損減碼。"""
+    rows = db.query("SELECT id, stock_id, name FROM recommendations WHERE status='active' AND trade_date=?", (day,))
+    if not rows:
+        return 0
+    names = "、".join(f"{r['stock_id']} {r['name']}" for r in rows[:10])
+    notifier.alert("info", f"今天有 {len(rows)} 檔推薦尚未確認", f"{names}\n若已買進，請到網站「推薦」按「我已買進」；沒買可按「不買」。",
+                   dedup_key=f"remind:{day}", level="info")
+    return len(rows)
 
 
 def expire_old(days: int = 3) -> None:

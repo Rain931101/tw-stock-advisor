@@ -66,6 +66,7 @@ function planHtml(p) {
     <dt>停損</dt><dd class="down"><b>${fmt(p.stop)}</b>　<span class="muted">${esc(p.stop_reason)}</span></dd>
     <dt>目標</dt><dd>${tg}</dd>
     ${p.healthy_pullback ? `<dt>健康回檔價</dt><dd>${fmt(p.healthy_pullback)}</dd>` : ""}
+    ${p.reward_risk ? `<dt>報酬／風險</dt><dd>${p.reward_risk}</dd>` : ""}
     <dt>建議部位</dt><dd>${fmt(sz.shares, 0)} 股（約 ${fmt(sz.cost, 0)} 元），打到停損約虧 ${fmt(sz.loss_at_stop, 0)} 元（${sz.stop_pct}%）</dd>
   </dl>`;
 }
@@ -307,4 +308,5 @@ $$("[data-job]").forEach((b) => b.addEventListener("click", async () => {
 // ---------------- 啟動 ----------------
 setInterval(() => { if (current === "market") loaders.market(); if (current === "portfolio") loaders.portfolio(); }, 30000);
 pollAlerts();
+window.addEventListener("hashchange", () => { const t = location.hash.slice(1); if (t && t !== current && loaders[t]) show(t); });
 show(location.hash.slice(1) || "market");

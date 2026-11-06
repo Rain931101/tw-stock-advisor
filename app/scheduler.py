@@ -25,6 +25,8 @@ def _safe(fn, *a, **kw):
 def after_close():
     if not monitor.trading_day():
         return "not trading day"
+    from datetime import date
+    recommender.remind_unconfirmed(date.today().isoformat())
     n = sync.daily_update()
     monitor.close_review()
     return {"synced": n, "scan": recommender.daily_scan(fetch_fundamentals=False)}
