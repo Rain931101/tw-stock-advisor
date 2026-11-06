@@ -18,15 +18,44 @@ def _pct(a, b):
     return None if not a or not b else round((a - b) / b * 100, 2)
 
 
-def indices() -> dict:
-    q = twse.fetch_realtime([("t00", "index"), ("o00", "index")])
+def official_ohlc(d: date) -> dict:
+    """當天已公布就永久快取；否則 10 分鐘內不重抓。"""
+    key = f"index_ohlc:{d.isoformat()}"
+    hit = db.cache_get(key)
+    if hit and all(v.get("date") == d.isoformat() for v in hit.values()) and len(hit) == 2:
+        return hit
+    hit = db.cache_get(key, 0.15)
+    if hit is not None:
+        return hit
+    data = twse.fetch_official_index_ohlc(d)
+    db.cache_set(key, data)
+    return data
+
+
+def indices(now: datetime | None = None) -> dict:
+    """盤中（9:00~13:30）用 MIS 即時；其餘時間用官方每日 OHLC。"""
+    now = now or datetime.now()
+    t = now.time()
+    in_session = now.weekday() < 5 and datetime.strptime("09:00", "%H:%M").time() <= t < datetime.strptime("13:30", "%H:%M").time()
+    names = {"t00": "加權指數", "o00": "櫃買指數"}
     out = {}
-    for k, name in (("t00", "加權指數"), ("o00", "櫃買指數")):
+    q = {}
+    if in_session:
+        q = twse.fetch_realtime([("t00", "index"), ("o00", "index")])
+        q = {k: v for k, v in q.items() if v.get("date") == now.strftime("%Y%m%d") and v.get("high")}
+    official = {} if len(q) == 2 else official_ohlc(now.date())
+    for k, name in names.items():
         v = q.get(k)
         if v:
             out[k] = {"name": name, "price": v["price"], "prev_close": v["prev_close"],
-                      "change_pct": _pct(v["price"], v["prev_close"]), "time": v["time"],
-                      "high": v["high"], "low": v["low"], "date": v["date"]}
+                      "change_pct": _pct(v["price"], v["prev_close"]), "time": f"盤中 {v['time']}",
+                      "open": v["open"], "high": v["high"], "low": v["low"], "source": "realtime"}
+        elif official.get(k):
+            o = official[k]
+            label = "收盤" if o["date"] == now.date().isoformat() else f"{o['date'][5:].replace('-', '/')} 收盤"
+            out[k] = {"name": name, "price": o["close"], "prev_close": o["prev_close"],
+                      "change_pct": _pct(o["close"], o["prev_close"]), "time": label,
+                      "open": o["open"], "high": o["high"], "low": o["low"], "source": "official"}
     return out
 
 

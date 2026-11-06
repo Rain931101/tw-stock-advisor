@@ -31,11 +31,20 @@ def trading_day(now: datetime | None = None) -> bool:
     hit = db.cache_get(key)
     if hit is not None:
         return hit
+    if now.weekday() >= 5:
+        return False
     try:
-        ok = twse.market_is_open_today()
+        if time(9, 1) <= now.time() < time(13, 30):
+            ok = twse.market_is_open_today()  # 盤中：即時看板今天有成交
+        elif now.time() >= time(13, 30):
+            from app.services import market  # 盤後：官方今天有公布收盤指數
+            ok = (market.official_ohlc(now.date()).get("t00") or {}).get("date") == now.date().isoformat()
+        else:
+            return True  # 開盤前無法判斷，先當作交易日，不快取
     except Exception:
-        return now.weekday() < 5
-    db.cache_set(key, ok)
+        return True
+    if ok or now.time() >= time(9, 10):
+        db.cache_set(key, ok)
     return ok
 
 

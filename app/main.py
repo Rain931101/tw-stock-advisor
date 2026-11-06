@@ -120,10 +120,19 @@ def stock(sid: str, fundamentals: bool = True):
         raise HTTPException(404, "查無此股票")
     df = db.load_prices(sid, 420)
     out = {"info": info, "quote": None, "technical": None, "fundamental": None, "chips": None, "bars": []}
-    try:
-        out["quote"] = twse.fetch_realtime([(sid, info["market"])]).get(sid)
-    except Exception:
-        pass
+    if monitor.in_session():
+        try:
+            out["quote"] = twse.fetch_realtime([(sid, info["market"])]).get(sid)
+            if out["quote"]:
+                out["quote"]["time"] = f"盤中 {out['quote']['time']}"
+        except Exception:
+            pass
+    elif len(df) >= 2:
+        # 盤後 MIS 不含收盤集合競價、晚上還會重置，改用當日正式收盤
+        last, prev = df.iloc[-1], df.iloc[-2]
+        out["quote"] = {"price": float(last["close"]), "open": float(last["open"]), "high": float(last["high"]),
+                        "low": float(last["low"]), "prev_close": float(prev["close"]), "volume": float(last["volume"]),
+                        "time": f"{df.index[-1].strftime('%m/%d')} 收盤"}
     if len(df):
         d = ind.add_indicators(df).tail(260)
         bars = d.reset_index()
