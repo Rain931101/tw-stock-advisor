@@ -442,7 +442,58 @@ class ChatIn(BaseModel):
 def chat_status():
     from app.services import assistant
     s = get_settings()
-    return {"configured": assistant.configured(), "model": s.ai_model}
+    key = s.anthropic_api_key
+    return {"configured": assistant.configured(), "model": s.ai_model,
+            "key_hint": f"sk-ant-…{key[-4:]}" if key else None}  # 只回傳末四碼，完整金鑰不離開伺服器
+
+
+class ApiKeyIn(BaseModel):
+    key: str
+
+
+def _write_env(name: str, value: str | None) -> None:
+    """更新專案 .env 的單一變數（保留其他行）；value=None 代表刪除。"""
+    from pathlib import Path
+    path = Path(".env")
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    lines = [ln for ln in lines if not ln.startswith(f"{name}=")]
+    if value is not None:
+        lines.append(f"{name}={value}")
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    path.chmod(0o600)
+
+
+@app.post("/api/settings/ai-key")
+async def set_ai_key(body: ApiKeyIn, test: bool = True):
+    import os
+    import anthropic
+    key = body.key.strip()
+    if not key.startswith("sk-ant-") or any(c.isspace() for c in key) or len(key) < 30:
+        raise HTTPException(400, "金鑰格式不對：Claude API 金鑰是 sk-ant- 開頭的一長串英數字")
+    if test:  # 先用一次極小的請求確認金鑰有效，再寫入
+        try:
+            await anthropic.AsyncAnthropic(api_key=key, max_retries=1).models.retrieve(get_settings().ai_model)
+        except anthropic.AuthenticationError:
+            raise HTTPException(400, "金鑰無效（驗證失敗），請重新複製一次")
+        except anthropic.PermissionDeniedError:
+            raise HTTPException(400, "此金鑰沒有使用該模型的權限")
+        except anthropic.NotFoundError:
+            raise HTTPException(400, f"找不到模型 {get_settings().ai_model}，請確認 AI_MODEL 設定")
+        except anthropic.APIConnectionError:
+            raise HTTPException(503, "連不上 Claude API，請確認網路後再試")
+    _write_env("ANTHROPIC_API_KEY", key)
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    get_settings.cache_clear()
+    return chat_status()
+
+
+@app.delete("/api/settings/ai-key")
+def delete_ai_key():
+    import os
+    _write_env("ANTHROPIC_API_KEY", None)
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    get_settings.cache_clear()
+    return chat_status()
 
 
 @app.post("/api/chat")

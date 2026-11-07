@@ -188,7 +188,7 @@ async def chat(conv_id: str | None, text: str, context: str | None = None):
     messages = _conversations.setdefault(conv_id, [])
     yield _event("conv", id=conv_id)
     if not configured():
-        yield _event("error", message="尚未設定 ANTHROPIC_API_KEY：請在專案的 .env 加上一行 ANTHROPIC_API_KEY=你的金鑰，然後重新啟動伺服器。")
+        yield _event("error", message="尚未設定 Claude API 金鑰：請到「設定」頁的「AI 助理」區塊貼上金鑰（sk-ant- 開頭）並按「驗證並儲存」。")
         return
 
     s = get_settings()
@@ -230,7 +230,7 @@ async def chat(conv_id: str | None, text: str, context: str | None = None):
             turns -= 1
             continue
         except anthropic.AuthenticationError:
-            yield _event("error", message="ANTHROPIC_API_KEY 無效，請確認 .env 中的金鑰。")
+            yield _event("error", message="API 金鑰無效，請到「設定」頁重新貼上金鑰。")
             return
         except anthropic.PermissionDeniedError as e:
             yield _event("error", message=f"金鑰沒有使用此模型的權限：{e.message}")

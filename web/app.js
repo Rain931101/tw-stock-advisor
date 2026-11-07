@@ -473,6 +473,7 @@ setInterval(pollAlerts, 15000);
 
 // ---------------- 設定 ----------------
 loaders.settings = async () => {
+  loadAiKey();
   const s = await api("/api/settings");
   for (const [k, v] of Object.entries(s)) { const i = $(`#settings-form [name=${k}]`); if (i) { if (i.type === "checkbox") i.checked = !!v; else i.value = v; } }
   $("#max-stop").innerHTML = `換算：進場點到停損點的距離不能超過 ${s.max_stop_pct}%，超過就不進場。` + (s.warnings || []).map((w) => `<br><span class="warn">⚠️ ${esc(w)}</span>`).join("");
@@ -653,3 +654,33 @@ $("#chat-input").addEventListener("keydown", (e) => {
 });
 $("#chat-input").addEventListener("input", (e) => { e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`; });
 $("#chat-log").addEventListener("click", (e) => { const b = e.target.closest("[data-ask]"); if (b) chatSend(b.dataset.ask); });
+
+// ---------------- AI 金鑰設定 ----------------
+function renderAiKey(s) {
+  $("#ai-key-state").innerHTML = s.configured
+    ? `✅ 已設定（${esc(s.key_hint || "")}），模型 ${esc(s.model)}`
+    : `尚未設定，AI 助理暫時無法使用`;
+  $("#ai-key-del").classList.toggle("hidden", !s.configured);
+  if (!$("#chat").classList.contains("hidden")) $("#chat-model").textContent = s.configured ? s.model : "尚未設定 API 金鑰";
+}
+function loadAiKey() { api("/api/chat/status").then(renderAiKey).catch(() => { $("#ai-key-state").textContent = "無法讀取狀態"; }); }
+$("#ai-key-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const key = $("#ai-key").value.trim();
+  if (!key) return;
+  const msg = $("#ai-key-msg");
+  msg.textContent = "驗證中…"; msg.className = "muted";
+  try {
+    const r = await fetch("/api/settings/ai-key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "儲存失敗");
+    $("#ai-key").value = "";
+    msg.textContent = "已驗證並儲存，可以開始問 AI 了"; msg.className = "up";
+    renderAiKey(d);
+  } catch (err) { msg.textContent = err.message; msg.className = "danger"; }
+});
+$("#ai-key-del").addEventListener("click", async () => {
+  if (!confirm("確定要移除 API 金鑰嗎？移除後 AI 助理將無法使用。")) return;
+  renderAiKey(await api("/api/settings/ai-key", { method: "DELETE" }));
+  $("#ai-key-msg").textContent = "已移除"; $("#ai-key-msg").className = "muted";
+});

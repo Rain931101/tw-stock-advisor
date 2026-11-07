@@ -119,6 +119,15 @@
         </form>
       </div>
       <div class="card">
+        <h3>AI 助理（Claude API 金鑰）</h3>
+        <p class="muted">到 <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com → API Keys</a> 建立金鑰（sk-ant- 開頭），貼在下面。金鑰只存在這台電腦的 .env，不會上傳 GitHub，網頁上也只顯示末四碼。</p>
+        <div id="ai-key-state" class="muted">讀取中…</div>
+        <form id="ai-key-form" class="form" autocomplete="off">
+          <label>API 金鑰<input id="ai-key" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false"></label>
+          <div class="btns"><button>驗證並儲存</button><button type="button" class="ghost danger-text hidden" id="ai-key-del">移除金鑰</button><span id="ai-key-msg" class="muted"></span></div>
+        </form>
+      </div>
+      <div class="card">
         <h3>系統狀態</h3>
         <div id="sys"></div>
         <div class="btns">

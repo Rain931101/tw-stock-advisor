@@ -73,4 +73,4 @@ def test_tool_loop(monkeypatch):
 def test_not_configured(monkeypatch):
     monkeypatch.setattr(assistant, "configured", lambda: False)
     events = _collect(assistant.chat(None, "hi"))
-    assert events[-1]["type"] == "error" and "ANTHROPIC_API_KEY" in events[-1]["message"]
+    assert events[-1]["type"] == "error" and "金鑰" in events[-1]["message"]
