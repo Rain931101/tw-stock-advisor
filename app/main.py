@@ -302,6 +302,7 @@ def stock(sid: str, fundamentals: bool = True):
             logging.getLogger(__name__).warning("winrate %s: %s", sid, e)
             wr = None
         out["verdict"] = recommender.apply_winrate(out["verdict"], wr, info, price, fund, out["chips"])
+        out["verdict"] = recommender.apply_nearmatch(out["verdict"], info, price, fund, out["chips"])
     return db.jsonable(out)
 
 

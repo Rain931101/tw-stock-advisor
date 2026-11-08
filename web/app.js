@@ -301,6 +301,21 @@ function vSection(title, body) {
 function vList(items, cls = "") {
   return items.length ? `<ul class="list">${items.map((x) => `<li class="${cls}">${cls === "warn" ? "! " : ""}${esc(x)}</li>`).join("")}</ul>` : `<p class="muted">無</p>`;
 }
+function nearHtml(nm) {
+  if (!nm) return `<p class="muted">勝率模型尚未訓練（勝率頁按「重新訓練」），或此股資料不足</p>`;
+  if (!nm.items.length) return `<p class="muted">沒有任何進場型態達到多數條件（至少三分之二）</p>`;
+  const pct = (x) => (x * 100).toFixed(0) + "%";
+  const tag = { buy: ["up", "達推薦門檻"], avoid: ["down", "歷史虧損"], neutral: ["muted", "未達門檻"], unknown: ["muted", "樣本不足"] };
+  return nm.items.map((it) => {
+    const st = it.stats, [c, t] = tag[it.decision];
+    const nums = st ? `勝率 <b>${pct(st.rate)}</b>（訓練 ${pct(st.train_rate)}／驗證 ${pct(st.test_rate)}）・每筆期望 <b class="${st.exp >= 0 ? "up" : "down"}">${st.exp >= 0 ? "+" : ""}${st.exp.toFixed(2)}%</b>・${st.n} 筆`
+      : "歷史上同樣情況的樣本太少，無法估計";
+    return `<div class="near"><div><b>${esc(it.name)}</b> <span class="muted">符合 ${it.met.length}／${it.total}</span> <span class="${c}">【${t}】</span></div>
+      <div>${nums}</div>
+      ${it.missing.length ? `<div class="muted">未成立：${it.missing.map(esc).join("、")}</div>` : ""}
+      ${it.basis ? `<div class="muted">比對依據：${esc(it.basis)}</div>` : ""}</div>`;
+  }).join("") + `<p class="muted">一個條件沒到位不直接否決：回測過去一年「同型態、缺同樣條件」的所有交易，訓練期與驗證期都達推薦門檻（期望報酬、勝率）才建議買進。</p>`;
+}
 function verdictHtml(v, sid) {
   if (!v) return "";
   const cls = { buy: "verdict-buy", wait: "verdict-wait", avoid: "verdict-avoid" }[v.decision];
@@ -322,6 +337,7 @@ function verdictHtml(v, sid) {
   } else {
     conds = `<p class="muted">沒有任何進場型態接近成立</p>`;
   }
+  const near = nearHtml(v.near);
   const plan = p && v.decision === "buy"
     ? `${planHtml(p)}${marginHtml(p.margin)}<details><summary>停利／停損／減碼規則</summary>${exitRulesHtml(p.exit_rules)}</details>
       <div class="btns"><button id="verdict-buy">我已買進</button></div>`
@@ -331,9 +347,10 @@ function verdictHtml(v, sid) {
     ${vSection("歷史期望報酬", wr)}
     ${vSection("判斷理由", vList(v.reasons))}
     ${vSection("進場條件", conds)}
+    ${vSection("多數條件勝率", near)}
     ${vSection("注意事項", vList(v.cautions, "warn"))}
     ${vSection("操作計畫", plan)}
-    <p class="muted">判斷順序：歷史期望報酬（達推薦門檻直接推薦、≤ 不推門檻不推薦）→ 基本面健檢 → 位階與格局 → 進場型態 → 風控 → 大盤與籌碼。僅為規則與統計判斷，不是投資建議。</p>
+    <p class="muted">判斷順序：歷史期望報酬（達推薦門檻直接推薦、≤ 不推門檻不推薦）→ 基本面健檢 → 位階與格局 → 進場型態（全部成立，或多數成立且歷史勝率達門檻）→ 風控 → 大盤與籌碼。僅為規則與統計判斷，不是投資建議。</p>
   </div>`;
 }
 function drawChart(bars, sig) {

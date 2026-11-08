@@ -174,10 +174,16 @@ def train() -> dict:
         rs = risk_settings()
         status.update(running=True, message="建立訓練資料…")
         p = params()
-        data, *_ = build_dataset(rs["min_avg_volume"], rs["min_price"], p)
+        data, panel, industry, *_ = build_dataset(rs["min_avg_volume"], rs["min_price"], p)
         status["message"] = f"在 {len(data):,} 筆樣本中尋找條件組合…"
         model = mine_rules(data, p)
         db.cache_set("winrate_model", model)
+        status["message"] = "回測「多數條件成立」的進場型態…"
+        try:
+            from app.services import nearmatch
+            nearmatch.train(panel, p, industry)
+        except Exception as e:  # 不影響主模型
+            log.warning("nearmatch train failed: %s", e)
         status.update(message="完成", trained_at=model["trained_at"])
         return {k: model[k] for k in ("trained_at", "period", "samples", "base_rate")} | {
             "rules": len(model["rules"]), "buy_rules": sum(r["reliable_buy"] for r in model["rules"])}

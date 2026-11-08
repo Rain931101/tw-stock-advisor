@@ -300,6 +300,28 @@ def daily_scan(fetch_fundamentals: bool = True, max_fundamental_fetch: int = 60)
                     saved += 1
     except Exception as e:
         log.warning("winrate scan failed: %s", e)
+    # 多數條件成立推薦：型態只差少數條件，但歷史上同樣情況兩期都達推薦門檻（基本面須合格）
+    try:
+        from app.services import nearmatch, winrate
+        nm_model = nearmatch.model()
+        if nm_model:
+            by_id = {u["stock_id"]: u for u in uni}
+            feats = winrate.today_features()
+            for sid in nearmatch.today():
+                if sid not in by_id:
+                    continue
+                nm = nearmatch.assess(sid, nm_model, feats.get(sid) or {})
+                if not nm or not nm["best"] or nm["weak"]:
+                    continue
+                fund = db.cache_get(f"fundamental:{sid}")
+                if not fund or not fund.get("pass"):
+                    continue
+                price = float(groups[sid]["close"].iloc[-1]) if sid in groups else None
+                plan = price and near_plan(by_id[sid], nm["best"], nm["params"], price, fund, db.cache_get(f"chips:{sid}:20"), rs)
+                if plan and save_recommendation(plan, trade_date, intraday=False):
+                    saved += 1
+    except Exception as e:
+        log.warning("nearmatch scan failed: %s", e)
     db.cache_set("watchlist", watch[:300])
     expire_old()
     notifier.flush()
@@ -491,7 +513,8 @@ def winrate_for(stock_id: str) -> dict | None:
     return winrate.assess(cond, m)
 
 
-def winrate_plan(stock: dict, wr: dict, price: float, fund: dict | None, chips: dict | None, rs: dict) -> dict | None:
+def winrate_plan(stock: dict, wr: dict, price: float, fund: dict | None, chips: dict | None, rs: dict,
+                 setup: str = "winrate", setup_name: str | None = None) -> dict | None:
     """勝率規則的操作計畫：停利、停損、持有天數與訓練時的交易定義完全相同。"""
     p = wr["params"]
     stop = risk.round_tick(price * (1 - p["stop"]))
@@ -502,7 +525,7 @@ def winrate_plan(stock: dict, wr: dict, price: float, fund: dict | None, chips: 
     rule = wr["rule"]
     return {
         "stock_id": stock["stock_id"], "name": stock.get("name"), "industry": stock.get("industry"), "market": stock.get("market"),
-        "setup": "winrate", "setup_name": "歷史勝率規則：" + " + ".join(rule["names"]),
+        "setup": setup, "setup_name": setup_name or "歷史勝率規則：" + " + ".join(rule["names"]),
         "score": round(60 + rule["exp"] * 10, 1), "price": price, "reward_risk": round(p["target"] / p["stop"], 2),
         "entry_low": risk.round_tick(price * 0.99), "entry_high": risk.round_tick(price * 1.01),
         "stop": stop, "stop_reason": f"訓練時的停損：進場價 −{p['stop']:.0%}",
@@ -516,7 +539,7 @@ def winrate_plan(stock: dict, wr: dict, price: float, fund: dict | None, chips: 
                     f"每筆期望報酬 {rule['exp']:+.2f}%"] + [f"符合：{n}" for n in rule["names"]],
         "warnings": ["勝率規則是統計結果，樣本只有約一年，未來不保證相同"],
         "tags": ["勝率規則"], "sizing": sizing.to_dict(), "context": None,
-        "margin": margin_option(stock, "winrate", price, stop, fund, "中性", sizing.shares, rs),
+        "margin": margin_option(stock, setup, price, stop, fund, "中性", sizing.shares, rs),
         "fundamental": None if not fund else {"score": fund["score"], "grade": fund["grade"], "metrics": fund.get("metrics", {}),
                                              "highlights": [c for c in fund.get("checks", []) if c["status"] in ("good", "bad", "warn")][:8]},
         "chips": None if not chips else {"summary": chips["summary"], "notes": chips["notes"]},
@@ -552,4 +575,51 @@ def apply_winrate(verdict: dict, wr: dict | None, stock: dict, price: float, fun
     elif wr["decision"] == "avoid":
         verdict.update(decision="avoid", label="不建議買進", plan=None,
                        summary=f"歷史每筆期望報酬 {wr['exp']:+.2f}%（≤ {p['avoid_exp']:+.1f}%），長期做下去是虧的，不推薦")
+    return verdict
+
+
+# ======================= 多數條件成立 =======================
+def near_plan(stock: dict, best: dict, params: dict, price: float, fund: dict | None, chips: dict | None, rs: dict) -> dict | None:
+    st = best["stats"]
+    rule = {**st, "names": best["met"] + best.get("extra", [])}
+    plan = winrate_plan(stock, {"params": params, "rule": rule, "rate": st["rate"], "exp": st["exp"]}, price, fund, chips, rs,
+                        setup="nearmatch", setup_name=f"多數條件成立：{best['name']}（{len(best['met'])}／{best['total']}）")
+    if plan:
+        plan["reasons"] = [f"歷史勝率 {st['rate']:.0%}（訓練 {st['train_rate']:.0%}／驗證 {st['test_rate']:.0%}，{st['n']} 筆）",
+                           f"每筆期望報酬 {st['exp']:+.2f}%（訓練 {st['train_exp']:+.2f}%／驗證 {st['test_exp']:+.2f}%）",
+                           f"比對依據：{best['basis']}"] + [f"符合：{n}" for n in best["met"] + best.get("extra", [])]
+        plan["warnings"] = [f"未成立：{n}（歷史上缺這項仍達推薦門檻）" for n in best["missing"]] + plan["warnings"]
+        plan["tags"] = ["多數條件"]
+    return plan
+
+
+def apply_nearmatch(verdict: dict, stock: dict, price: float, fund: dict | None, chips: dict | None) -> dict:
+    """型態只差少數條件時，用歷史上「同樣情況」的勝率與期望報酬決定：兩期都達推薦門檻就建議買進。"""
+    from app.services import nearmatch
+    try:
+        nm = nearmatch.assess(stock["stock_id"])
+    except Exception as e:
+        log.warning("nearmatch %s: %s", stock["stock_id"], e)
+        nm = None
+    verdict["near"] = nm
+    if not nm or not nm["best"] or verdict["decision"] != "wait":
+        return verdict
+    best = nm["best"]
+    st = best["stats"]
+    if fund is None:
+        verdict["cautions"].append(f"「{best['name']}」多數條件成立且歷史期望 {st['exp']:+.2f}%，但基本面尚未確認，先觀望")
+        return verdict
+    if not fund.get("pass"):
+        return verdict
+    plan = near_plan(stock, best, nm["params"], price, fund, chips, risk_settings())
+    if not plan:
+        return verdict
+    day = datetime.now().date().isoformat()
+    save_recommendation(plan, day, intraday=False, notify=False)
+    row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, plan["stock_id"], plan["setup"]))
+    verdict.update(decision="buy", label="建議買進", plan=plan, rec_id=row["id"] if row else None,
+                   summary=f"「{best['name']}」符合 {len(best['met'])}／{best['total']} 個條件；歷史上同樣情況勝率 {st['rate']:.0%}、"
+                           f"每筆期望報酬 {st['exp']:+.2f}%（訓練、驗證兩期都達推薦門檻）")
+    verdict["reasons"] = plan["reasons"] + verdict["reasons"]
+    verdict["closest"] = {"name": best["name"], "met": best["met"], "missing": best["missing"]}
     return verdict

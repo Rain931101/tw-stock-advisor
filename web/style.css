@@ -146,3 +146,5 @@ a.btnlink { display: inline-block; text-decoration: none; color: var(--accent); 
 .chat-form button { border: 0; border-radius: 8px; padding: 0 14px; background: var(--accent); color: #fff; cursor: pointer; }
 .chat-form button:disabled { opacity: .5; cursor: default; }
 @media (max-width: 520px) { .chat { right: 8px; left: 8px; bottom: 8px; width: auto; height: calc(100vh - 80px); } }
+.near { padding: 6px 0; border-bottom: 1px dashed var(--line, #e5e7eb); line-height: 1.6; }
+.near:last-of-type { border-bottom: 0; }
