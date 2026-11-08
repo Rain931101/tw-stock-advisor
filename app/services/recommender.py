@@ -596,7 +596,7 @@ def decision_basis(v: dict) -> dict | None:
     ml = v.get("ml")
     if v["decision"] == "buy" and plan.get("setup") == "ml" and ml and ml.get("bucket"):
         b = ml["bucket"]
-        return {"source": "ml", "title": f"AI 模型（LightGBM）當日排名前 {round((1 - b['threshold']) * 100)}%",
+        return {"source": "ml", "title": f"AI 二次過濾（LightGBM）主訊號排名前 {round((1 - b['threshold']) * 100)}%",
                 "desc": "樣本外（模型沒看過的期間）同樣排名的交易", "rate": b["all"]["rate"], "exp": b["all"]["exp"],
                 "n": b["all"]["n"], "train_rate": b["select"]["rate"], "test_rate": b["verify"]["rate"],
                 "train_exp": b["select"]["exp"], "test_exp": b["verify"]["exp"], "params": params, "pass": True}
@@ -640,12 +640,11 @@ def _upgrade_near(verdict: dict, nm: dict | None, stock: dict, price: float, fun
 
 # ======================= 機器學習模型（LightGBM） =======================
 def ml_plan(stock: dict, ml: dict, price: float, fund: dict | None, chips: dict | None, rs: dict) -> dict | None:
-    """操作計畫與訓練時的三欄式標記完全相同：+2 ATR 停利、−1.5 ATR 停損、10 個交易日到期。"""
-    p, atr = ml["params"], ml["atr"]
+    """操作計畫與訓練時的出場規則相同（初始停損 → 保本 → 移動停利），出場細節由 attach_trailing 補上。"""
+    pol, atr = ml["params"]["policy"], ml["atr"]
     if not atr:
         return None
-    stop = risk.round_tick(price - p["down"] * atr)
-    target = risk.round_tick(price + p["up"] * atr)
+    stop = risk.round_tick(max(price - pol["sl_atr"] * atr, price * (1 - pol["sl_cap"])))
     if stop <= 0 or stop >= price:
         return None
     sizing = risk.size_position(price, stop, rs["per_trade_capital"], rs["max_loss_per_trade"], rs["fee_discount"])
@@ -655,20 +654,15 @@ def ml_plan(stock: dict, ml: dict, price: float, fund: dict | None, chips: dict 
     st = b["all"]
     return {
         "stock_id": stock["stock_id"], "name": stock.get("name"), "industry": stock.get("industry"), "market": stock.get("market"),
-        "setup": "ml", "setup_name": f"AI 模型（LightGBM）：當日排名前 {round((1 - b['threshold']) * 100)}%",
-        "score": round(60 + st["exp"] * 10, 1), "price": price, "reward_risk": round(p["up"] / p["down"], 2),
+        "setup": "ml", "setup_name": f"AI 二次過濾（LightGBM）：主訊號排名前 {round((1 - b['threshold']) * 100)}%",
+        "score": round(60 + st["exp"] * 10, 1), "price": price, "reward_risk": None,
         "entry_low": risk.round_tick(price * 0.99), "entry_high": risk.round_tick(price * 1.01),
-        "stop": stop, "stop_reason": f"進場價 − {p['down']} 倍 ATR（ATR {atr:.2f}）",
-        "targets": [{"price": target, "label": f"+{p['up']} 倍 ATR"}], "healthy_pullback": None,
-        "exit_rules": [
-            {"type": "price_below", "level": stop, "action": "sell_all", "label": f"跌破停損（−{p['down']} ATR）"},
-            {"type": "target", "level": target, "action": "sell_all", "label": f"達到停利（+{p['up']} ATR）"},
-            {"type": "time_exit", "days": p["horizon"], "action": "sell_all", "label": f"持有滿 {p['horizon']} 個交易日出場"},
-        ],
+        "stop": stop, "stop_reason": f"進場價 − {pol['sl_atr']} 倍 ATR（最多 −{pol['sl_cap']:.0%}）",
+        "targets": [], "healthy_pullback": None, "exit_rules": [],
         "reasons": [f"模型樣本外勝率 {st['rate']:.0%}、每筆期望報酬 {st['exp']:+.2f}%（{st['n']:,} 筆）",
-                    f"選取期 期望 {b['select']['exp']:+.2f}%／驗證期 期望 {b['verify']['exp']:+.2f}%，"
-                    f"都比同期間全體多 {min(b['lift']):+.2f} 個百分點以上",
-                    f"今日機率 {ml['prob']:.0%}，全市場排名前 {max(1, round((1 - ml['rank']) * 100))}%",
+                    f"選取期 勝率 {b['select']['rate']:.0%}／驗證期 勝率 {b['verify']['rate']:.0%}，"
+                    f"都比同期間全體主訊號高 {min(b['lift']) * 100:.1f} 個百分點以上；虧損超過 6% 的比例 {st['big_loss_rate']:.1%}",
+                    f"今日成功機率 {ml['prob']:.0%}，主訊號中排名前 {max(1, round((1 - ml['rank']) * 100))}%",
                     "大盤體制：加權指數在 20MA 與 60MA 之上（多頭）"],
         "warnings": ["機器學習模型是統計結果，訓練資料約一年，未來不保證相同"],
         "tags": ["AI 模型"], "sizing": sizing.to_dict(), "context": None,
@@ -720,6 +714,8 @@ def full_verdict(stock: dict, res: dict, fund: dict | None, chips: dict | None, 
     v = apply_nearmatch(v, stock, price, fund, chips)
     v = apply_ml(v, stock, price, fund, chips)
     day = trade_day()
+    if v["decision"] == "buy" and v.get("plan"):
+        v["plan"] = attach_trailing(v["plan"], sid)
     if v["decision"] == "buy" and v.get("plan") and save:
         save_recommendation(v["plan"], day, intraday=False)
         row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, sid, v["plan"]["setup"]))
@@ -735,3 +731,44 @@ def full_verdict(stock: dict, res: dict, fund: dict | None, chips: dict | None, 
                                dedup_key=f"recinvalid:{r['id']}", stock_id=sid, ref_type="recommendation", ref_id=r["id"])
                 v["cautions"].append(f"先前的推薦（{day}）已失效：最新判斷為「{v['label']}」")
     return v
+
+
+# ======================= 移動停利（所有推薦共用的出場規則） =======================
+def attach_trailing(plan: dict, stock_id: str) -> dict:
+    """把操作計畫的停利改成移動停利（不設固定停利出場），並把停損收緊到「最多 −sl_cap」以免大賠。
+
+    出場規則（收盤後更新停損、隔天盤中跌破就立即通知）：
+      初始停損 → 漲 be_atr 倍 ATR 後保本 → 停損 = 進場後最高價 − trail_atr 倍 ATR（只上不下）→ 最長 horizon 天
+    """
+    from app.ml import features as MF
+    from app.ml import policy as P
+    pol = P.current()
+    df = db.load_prices(stock_id, 60)
+    if len(df) < 20:
+        return plan
+    adj = MF.adjust_prices(df, pd.DataFrame(columns=["date", "prev_close", "ref_price"]))
+    atr = float(MF.atr(adj, 14).iloc[-1])
+    price = plan["price"]
+    if not atr or atr != atr:
+        return plan
+    pol_stop = max(price - pol.sl_atr * atr, price * (1 - pol.sl_cap))
+    stop = risk.round_tick(max(plan.get("stop") or 0, pol_stop))      # 取較緊的停損：小賠
+    if stop >= price:
+        return plan
+    targets = plan.get("targets") or []
+    rules = [{"type": "price_below", "level": stop, "action": "sell_all", "label": "跌破停損／移動停利價，立即出場"}]
+    rules += [{"type": "target", "level": t["price"], "action": "notify", "label": f"到達{t['label']}（不急著賣，改由移動停利保護獲利）"}
+              for t in targets[:2]]
+    if pol.ma5_mode == "after_be":
+        rules.append({"type": "close_below_ma", "ma": 5, "action": "sell_all", "require_be": True,
+                      "label": "保本後收盤跌破五日線出場（五日線移動停利）", "intraday_after": "13:00"})
+    rules.append({"type": "time_exit", "days": pol.horizon, "action": "sell_all", "label": f"持有滿 {pol.horizon} 個交易日仍未出場，收盤出場"})
+    sizing = risk.size_position(price, stop, *(risk_settings()[k] for k in ("per_trade_capital", "max_loss_per_trade", "fee_discount")))
+    plan.update(
+        stop=stop, initial_stop=stop, exit_rules=rules,
+        stop_reason=f"停損取較緊者：{plan.get('stop_reason') or '型態停損'}／{pol.sl_atr} ATR（最多 −{pol.sl_cap:.0%}），避免大賠",
+        trail={"policy": pol.to_dict(), "atr": round(atr, 4), "desc": pol.describe()},
+        reward_risk=plan.get("reward_risk"), sizing=sizing.to_dict() if sizing.ok else plan.get("sizing"),
+    )
+    plan.setdefault("warnings", []).insert(0, "停利改為移動停利：" + pol.describe())
+    return plan

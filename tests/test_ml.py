@@ -80,3 +80,37 @@ def test_purged_walk_forward_no_overlap():
         assert tr.max() < te.min()
         gap = np.searchsorted(u, te.min()) - np.searchsorted(u, tr.max())
         assert gap > 11                          # 訓練最後一天距測試第一天超過 horizon+1 個交易日
+
+
+def test_split_detected_and_adjusted():
+    idx = pd.bdate_range("2026-01-05", periods=4)
+    # 1 拆 4：546 → 開盤 136.5、收 143
+    df = pd.DataFrame({"open": [540, 546, 136.5, 143], "high": [550, 546, 145, 145], "low": [540, 540, 136, 140],
+                       "close": [546, 546, 143, 143]}, index=idx, dtype=float)
+    a = MF.adjust_prices(df, pd.DataFrame(columns=["date", "prev_close", "ref_price"]))
+    assert abs(a["adj_close"].iloc[1] - 136.5) < 1e-6      # 分割前價格依比例縮小
+    assert a["ex_day"].tolist() == [False, False, True, False]
+
+
+def test_exit_policy_breakeven_and_trailing():
+    from app.ml import exits as XT
+    # 進場 100、ATR 2：初始停損 max(97, 95)=97；漲到 104（+2 ATR... 這裡 be_atr=1 → 102）後保本 100.5；
+    # 最高 110 → 移動停利 110 − 2×2 = 106；之後跌到 105 → 以 106 出場
+    c = [100, 100, 103, 108, 110, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105]
+    n = len(c)
+    o = np.array([100.0] + c[:-1]); o[1] = 100
+    h = np.maximum(o, c).astype(float); l = np.minimum(o, c).astype(float); c = np.array(c, float)
+    atr = np.full(n, 2.0)
+    p = XT.Policy(sl_atr=1.5, sl_cap=0.05, be_atr=1.0, trail_atr=2.0, ma5_mode="none", horizon=10)
+    r = XT.simulate(o, h, l, c, c, atr, c, h, l, np.zeros(n, bool), np.array([0]), p)
+    assert r["reason"][0] == "stop" and abs(r["ret"][0] - (106 / 100 - 1 - XT.COST)) < 1e-9
+
+
+def test_exit_policy_loss_capped():
+    from app.ml import exits as XT
+    # ATR 很大（10）：1.5 ATR = 15%，但 sl_cap 5% → 停損 95，小賠出場
+    c = np.array([100, 100, 99, 94, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90], float)
+    o = np.r_[100, c[:-1]]; h = np.maximum(o, c); l = np.minimum(o, c)
+    p = XT.Policy(sl_atr=1.5, sl_cap=0.05, be_atr=None, trail_atr=None, horizon=5)
+    r = XT.simulate(o, h, l, c, c, np.full(len(c), 10.0), c, h, l, np.zeros(len(c), bool), np.array([0]), p)
+    assert abs(r["ret"][0] - (95 / 100 - 1 - XT.COST)) < 1e-9

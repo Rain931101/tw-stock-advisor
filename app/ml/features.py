@@ -27,11 +27,22 @@ def adjust_prices(df: pd.DataFrame, divs: pd.DataFrame) -> pd.DataFrame:
         if not (d["prev_close"] and d["ref_price"]) or ex <= df.index[0] or ex > df.index[-1]:
             continue
         ratio = d["ref_price"] / d["prev_close"]
-        if 0.3 < ratio < 1.0:  # 合理範圍外（例如減資、資料錯誤）不還原
+        if 0.3 < ratio < 1.0:  # 合理範圍外（資料錯誤）不還原
             factor[factor.index < ex] *= ratio
+    ex = pd.Series(df.index.isin(pd.to_datetime(divs["date"])) if len(divs) else False, index=df.index)
+    # 分割、面額變更、減資：交易所資料沒有列在除權息表，但一天內價格跳動遠超過 ±10% 漲跌幅限制。
+    # 偵測到就視為公司行動，以「當天開盤 ÷ 前一日收盤」還原之前的價格，並當成除權息日（不判斷漲跌停）。
+    ratio = df["close"] / df["close"].shift(1)
+    breaks = ((ratio < 0.75) | (ratio > 1.35)) & ~ex
+    for day in df.index[breaks.fillna(False).to_numpy()][::-1]:
+        i = df.index.get_loc(day)
+        r = df["open"].iloc[i] / df["close"].iloc[i - 1]
+        if 0.02 < r < 50:
+            factor[factor.index < day] *= r
+            ex.loc[day] = True
     for k in ("open", "high", "low", "close"):
         out[f"adj_{k}"] = df[k] * factor
-    out["ex_day"] = df.index.isin(pd.to_datetime(divs["date"])) if len(divs) else False
+    out["ex_day"] = ex.to_numpy()
     return out
 
 

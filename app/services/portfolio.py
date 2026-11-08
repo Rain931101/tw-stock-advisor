@@ -102,6 +102,8 @@ def trail_stop(pos: dict, df: pd.DataFrame) -> tuple[float, str] | None:
     init = plan.get("initial_stop") or stop
     if not stop or len(df) < 6:
         return None
+    if plan.get("trail"):
+        return _trail_policy(pos, df)
     d = ind.add_indicators(df)
     r = d.iloc[-1]
     close, ma5 = float(r["close"]), float(r["ma5"])
@@ -119,6 +121,34 @@ def trail_stop(pos: dict, df: pd.DataFrame) -> tuple[float, str] | None:
     from app.rules.risk import round_tick
     new = round_tick(new)
     if new <= stop * 1.001 or new >= close:
+        return None
+    return new, reason
+
+
+def _trail_policy(pos: dict, df: pd.DataFrame) -> tuple[float, str] | None:
+    """移動停利（與回測相同）：收盤後依「進場後最高價」更新停損，隔天盤中跌破就通知出場。"""
+    from app.rules.risk import round_tick
+    plan, tr = pos["plan"], pos["plan"]["trail"]
+    p, atr = tr["policy"], tr["atr"]
+    buy, stop = pos["buy_price"], plan["stop"]
+    held = df[df.index >= pd.Timestamp(pos["buy_date"])]
+    if not len(held):
+        return None
+    high = max(float(held["high"].max()), buy)
+    close = float(df["close"].iloc[-1])
+    state = plan.setdefault("state", {})
+    cands = []
+    if p.get("be_atr") is not None and high >= buy + p["be_atr"] * atr:
+        state["be_on"] = True
+        cands.append((buy * (1 + p.get("be_buffer", 0.005)), f"已漲 {p['be_atr']} ATR，停損移到成本 +{p.get('be_buffer', 0.005):.1%}（保本，之後不會賠）"))
+    if p.get("trail_atr") is not None:
+        cands.append((high - p["trail_atr"] * atr, f"移動停利：進場後最高價 {high} − {p['trail_atr']} ATR"))
+    if not cands:
+        return None
+    new, reason = max(cands, key=lambda x: x[0])
+    new = round_tick(new)
+    if new <= stop * 1.001 or new >= close:
+        db.execute("UPDATE positions SET plan=? WHERE id=?", (db.dumps(plan), pos["id"]))  # 保存 be_on 狀態
         return None
     return new, reason
 
@@ -203,6 +233,8 @@ def evaluate_exits(pos: dict, df: pd.DataFrame, now: datetime | None, intraday: 
         if typ == "price_below" and (price <= rule["level"] or (intraday and low <= rule["level"] and price < rule["level"] * 1.005)):
             hits.append(rule)
         elif typ == "close_below_ma":
+            if rule.get("require_be") and not state.get("be_on"):
+                continue
             ma = r.get(f"ma{rule['ma']}")
             if ma is None or pd.isna(ma) or price >= ma:
                 continue
