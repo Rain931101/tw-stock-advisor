@@ -157,6 +157,11 @@ def build_plan(stock: dict, sig: technical.Signal, context: dict, fund: dict | N
     }
 
 
+def trade_day() -> str:
+    """推薦日期一律用最新交易日（週末、盤前開個股頁也不會多出一筆重複推薦）。"""
+    return db.one("SELECT MAX(date) AS d FROM prices")["d"] or datetime.now().date().isoformat()
+
+
 def save_recommendation(plan: dict, trade_date: str, intraday: bool, notify: bool = True) -> int | None:
     exists = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?",
                     (trade_date, plan["stock_id"], plan["setup"]))
@@ -465,8 +470,8 @@ def _stock_verdict(stock: dict, tech: dict, fund: dict | None, chips: dict | Non
                 blocked.append(f"{s.name}：{_plan_block_reason(s, price, rs)}")
         if plans and fund is not None:
             best = max(plans, key=lambda p: p["score"])
-            day = datetime.now().date().isoformat()
-            rid = save_recommendation(best, day, intraday=False, notify=False)
+            day = trade_day()
+            rid = save_recommendation(best, day, intraday=False)
             if rid is None:
                 row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?",
                              (day, best["stock_id"], best["setup"]))
@@ -565,8 +570,8 @@ def apply_winrate(verdict: dict, wr: dict | None, stock: dict, price: float, fun
         if plan is None:
             plan = winrate_plan(stock, wr, price, fund, chips, risk_settings())
         if plan:
-            day = datetime.now().date().isoformat()
-            save_recommendation(plan, day, intraday=False, notify=False)
+            day = trade_day()
+            save_recommendation(plan, day, intraday=False)
             row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, plan["stock_id"], plan["setup"]))
             verdict.update(decision="buy", label="建議買進", plan=plan, rec_id=row["id"] if row else None,
                            summary=f"歷史每筆期望報酬 {wr['exp']:+.2f}%、勝率 {wr['rate']:.0%}：" + " + ".join(wr["rule"]["names"]))
@@ -647,8 +652,8 @@ def _upgrade_near(verdict: dict, nm: dict | None, stock: dict, price: float, fun
     plan = near_plan(stock, best, nm["params"], price, fund, chips, risk_settings())
     if not plan:
         return
-    day = datetime.now().date().isoformat()
-    save_recommendation(plan, day, intraday=False, notify=False)
+    day = trade_day()
+    save_recommendation(plan, day, intraday=False)
     row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, plan["stock_id"], plan["setup"]))
     verdict.update(decision="buy", label="建議買進", plan=plan, rec_id=row["id"] if row else None,
                    summary=f"「{best['name']}」符合 {len(best['met'])}／{best['total']} 個條件；歷史上同樣情況勝率 {st['rate']:.0%}、"

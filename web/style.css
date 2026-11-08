@@ -148,3 +148,5 @@ a.btnlink { display: inline-block; text-decoration: none; color: var(--accent); 
 @media (max-width: 520px) { .chat { right: 8px; left: 8px; bottom: 8px; width: auto; height: calc(100vh - 80px); } }
 .near { padding: 6px 0; border-bottom: 1px dashed var(--line, #e5e7eb); line-height: 1.6; }
 .near:last-of-type { border-bottom: 0; }
+.alert .btns { margin-top: 6px; }
+.card.flash { outline: 2px solid var(--up); transition: outline .3s; }

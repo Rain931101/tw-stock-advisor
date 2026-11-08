@@ -400,7 +400,9 @@ def undo_reset_portfolio():
 # ---------------- 通知 ----------------
 @app.get("/api/alerts")
 def alerts(limit: int = 100, since_id: int = 0):
-    return db.query("SELECT * FROM alerts WHERE id>? ORDER BY id DESC LIMIT ?", (since_id, limit))
+    return db.query("""SELECT a.*, r.status AS rec_status FROM alerts a
+                       LEFT JOIN recommendations r ON a.ref_type='recommendation' AND r.id=a.ref_id
+                       WHERE a.id>? ORDER BY a.id DESC LIMIT ?""", (since_id, limit))
 
 
 @app.post("/api/alerts/read")

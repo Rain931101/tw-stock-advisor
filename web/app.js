@@ -89,7 +89,7 @@ function exitRulesHtml(rules) {
 function recCard(r) {
   const p = r.plan;
   const fund = p.fundamental;
-  return `<div class="card rec">
+  return `<div class="card rec" data-recid="${r.id}">
     <div class="head"><div class="title"><a href="#" data-sid="${r.stock_id}">${r.stock_id} ${esc(r.name)}</a></div><div class="score">分數 ${fmt(r.score, 1)}｜${r.trade_date}</div></div>
     <div><span class="chip">${esc(p.setup_name)}</span>${(p.tags || []).map((t) => `<span class="chip">${esc(t)}</span>`).join("")}<span class="chip">${esc(p.industry || "")}</span></div>
     ${planHtml(p)}
@@ -99,7 +99,7 @@ function recCard(r) {
     <details><summary>停利／停損／減碼規則</summary>${exitRulesHtml(p.exit_rules)}</details>
     ${fund ? `<details><summary>基本面 ${fund.grade}（${fund.score}）</summary>${fund.highlights.map(checkHtml).join("")}</details>` : ""}
     ${p.chips ? `<details><summary>法人籌碼</summary><p class="muted">5 日：外資 ${signed(p.chips.summary.foreign["5d"])} 張、投信 ${signed(p.chips.summary.trust["5d"])} 張</p><ul class="list">${p.chips.notes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}
-    <div class="btns">${r.status === "active" ? `<button data-buy="${r.id}">我已買進</button><button class="ghost" data-dismiss="${r.id}">不買</button>` : `<span class="muted">狀態：${r.status}</span>`}</div>
+    <div class="btns">${r.status === "active" ? `<button data-buy="${r.id}">我已買進</button><button class="ghost" data-dismiss="${r.id}">不買</button>` : `<span class="muted">狀態：${(REC_STATUS[r.status] || [, r.status])[1]}</span>`}</div>
   </div>`;
 }
 let recCache = [];
@@ -486,11 +486,34 @@ $("#retrain").addEventListener("click", async () => { await api("/api/jobs/train
 // ---------------- 通知 ----------------
 const ICON = { buy: "🟢", stop: "🔴", reduce: "🟠", target: "🎯", info: "ℹ️", market: "📊" };
 let lastAlertId = 0;
+const REC_STATUS = { active: ["up", "有效推薦"], bought: ["muted", "已買進"], dismissed: ["muted", "已按不買"], expired: ["muted", "已過期"], invalid: ["down", "已失效"] };
 loaders.alerts = async () => {
   const list = await api("/api/alerts");
-  $("#alerts").innerHTML = list.map((a) => `<div class="alert ${a.read ? "" : "unread"}"><div>${ICON[a.kind] || "•"}</div>
-     <div><b>${esc(a.title)}</b><pre>${esc(a.message)}</pre></div><div class="muted">${a.ts.replace("T", " ").slice(5, 16)}${a.sent_line ? "<br>已推 LINE" : ""}</div></div>`).join("") || `<p class="muted">尚無通知。</p>`;
+  $("#alerts").innerHTML = list.map((a) => {
+    const st = a.rec_status && REC_STATUS[a.rec_status];
+    const btns = [
+      a.stock_id ? `<button class="ghost" data-sid="${a.stock_id}">📈 看個股 ${a.stock_id}</button>` : "",
+      a.ref_type === "recommendation" && a.ref_id ? `<button class="ghost" data-gorec="${a.ref_id}" data-recstatus="${a.rec_status || "all"}">看推薦</button>` : "",
+      a.ref_type === "position" ? `<button class="ghost" data-goto="portfolio">看持股</button>` : "",
+    ].join("");
+    return `<div class="alert ${a.read ? "" : "unread"}"><div>${ICON[a.kind] || "•"}</div>
+     <div><b>${esc(a.title)}</b>${st ? ` <span class="chip ${st[0]}">${st[1]}</span>` : ""}<pre>${esc(a.message)}</pre>${btns ? `<div class="btns">${btns}</div>` : ""}</div>
+     <div class="muted">${a.ts.replace("T", " ").slice(5, 16)}${a.sent_line ? "<br>已推 LINE" : ""}</div></div>`;
+  }).join("") || `<p class="muted">尚無通知。</p>`;
 };
+document.addEventListener("click", async (e) => {
+  const g = e.target.closest("[data-gorec]");
+  if (g) {
+    const st = g.dataset.recstatus;
+    $("#rec-filter").value = [...$("#rec-filter").options].some((o) => o.value === st) ? st : "all";
+    show("recs");
+    await loaders.recs();
+    const card = document.querySelector(`#recs [data-recid="${g.dataset.gorec}"]`);
+    if (card) { card.scrollIntoView({ behavior: "smooth", block: "center" }); card.classList.add("flash"); setTimeout(() => card.classList.remove("flash"), 2000); }
+  }
+  const t = e.target.closest("[data-goto]");
+  if (t) show(t.dataset.goto);
+});
 $("#mark-read").addEventListener("click", async () => { await api("/api/alerts/read", { method: "POST" }); pollAlerts(); loaders.alerts(); });
 $("#ask-notify").addEventListener("click", () => Notification.requestPermission().then((p) => toast(p === "granted" ? "已開啟瀏覽器通知" : "未允許通知")));
 async function pollAlerts() {
