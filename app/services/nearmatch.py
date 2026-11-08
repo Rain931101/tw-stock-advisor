@@ -4,7 +4,7 @@
 用過去一年的資料回測「同一型態、同樣缺這幾個條件」的所有樣本，
 訓練期與驗證期都達到推薦門檻（期望報酬、勝率）才建議買進。
 
-交易定義與勝率模型相同（winrate.label_trades）：隔日開盤買進、+停利／−停損／持有天數到期。
+交易定義與勝率模型相同（winrate.label_policy）：隔日開盤買進，統一的移動停利出場規則。
 """
 import itertools
 import logging
@@ -30,7 +30,7 @@ def need(k: int) -> int:
 
 def _stock_rows(sid: str, g: pd.DataFrame, p: dict) -> list[pd.DataFrame]:
     tables, weak = F.setup_conditions(g)
-    lab = W.label_trades(g, p["hold_days"], p["target"], p["stop"])
+    lab = W.label_policy(sid, g)
     bias = (g["close"] / g["close"].rolling(5).mean() - 1 > 0.08).values
     out = []
     for s, t in tables.items():
@@ -53,8 +53,10 @@ def _stats(d: pd.DataFrame, split, p: dict) -> dict | None:
          "train_rate": round(float(tr["y"].mean()), 4), "test_rate": round(float(te["y"].mean()), 4),
          "train_exp": round(float(tr["ret"].mean()) * 100, 2), "test_exp": round(float(te["ret"].mean()) * 100, 2),
          "rate": round(float(d["y"].mean()), 4), "exp": round(float(d["ret"].mean()) * 100, 2),
-         "stocks": int(d["sid"].nunique())}
-    r["reliable_buy"] = min(r["train_exp"], r["test_exp"]) >= p["buy_exp"] and min(r["train_rate"], r["test_rate"]) >= p["min_rate"]
+         "stocks": int(d["sid"].nunique()),
+         "big": round(float(max((tr["ret"] < -p["big_loss"]).mean(), (te["ret"] < -p["big_loss"]).mean())), 4)}
+    r["reliable_buy"] = (min(r["train_exp"], r["test_exp"]) > p["buy_exp"] and min(r["train_rate"], r["test_rate"]) >= p["min_rate"]
+                         and r["big"] <= p["max_big"])
     r["reliable_avoid"] = max(r["train_exp"], r["test_exp"]) <= p["avoid_exp"]
     return r
 

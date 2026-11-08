@@ -71,9 +71,7 @@ class SettingsIn(BaseModel):
     winrate_buy_exp: float | None = None
     winrate_min_rate: float | None = None
     winrate_avoid_exp: float | None = None
-    winrate_target: float | None = None
-    winrate_stop: float | None = None
-    winrate_hold: float | None = None
+    winrate_max_big: float | None = None
 
 
 @app.get("/api/settings")
@@ -82,8 +80,8 @@ def get_settings_api():
     from app.rules.risk import max_stop_pct
     rs["max_stop_pct"] = round(max_stop_pct(rs["per_trade_capital"], rs["max_loss_per_trade"]) * 100, 2)
     wp = winrate.params()
-    rs.update(winrate_buy_exp=wp["buy_exp"], winrate_min_rate=wp["min_rate"], winrate_avoid_exp=wp["avoid_exp"], winrate_target=wp["target"],
-              winrate_stop=wp["stop"], winrate_hold=wp["hold_days"])
+    rs.update(winrate_buy_exp=wp["buy_exp"], winrate_min_rate=wp["min_rate"], winrate_avoid_exp=wp["avoid_exp"],
+              winrate_max_big=wp["max_big"], exit_desc=wp["exit_desc"])
     rs["warnings"] = []
     if rs["max_loss_per_trade"] >= rs["per_trade_capital"]:
         rs["warnings"].append("單筆最大虧損 ≥ 每筆部位資金：等於不設虧損上限。講義範例是部位 10 萬、最大虧損 1 萬（10%）")
@@ -106,13 +104,11 @@ SETTING_RULES = {  # 欄位: (最小, 最大, 中文名稱)
     "margin_rate": (0, 0.3, "融資年利率（0.065 = 6.5%）"),
     "margin_maintenance": (1, 3, "追繳維持率（1.3 = 130%）"),
     "winrate_buy_exp": (0, 20, "推薦：每筆期望報酬至少（%）"),
-    "winrate_min_rate": (0, 1, "推薦：勝率至少（0.5 = 50%）"),
+    "winrate_min_rate": (0, 1, "推薦：勝率至少（0.6 = 60%）"),
     "winrate_avoid_exp": (-20, 20, "不推薦：每筆期望報酬 ≤（%）"),
-    "winrate_target": (0.01, 0.5, "勝率定義：停利（0.08 = +8%）"),
-    "winrate_stop": (0.01, 0.3, "勝率定義：停損（0.05 = −5%）"),
-    "winrate_hold": (3, 120, "勝率定義：最長持有交易日"),
+    "winrate_max_big": (0, 1, "推薦：虧損超過 6% 的比例至多（0.02 = 2%）"),
 }
-WINRATE_DEFINITION_KEYS = {"winrate_target", "winrate_stop", "winrate_hold", "winrate_buy_exp", "winrate_min_rate", "winrate_avoid_exp"}
+WINRATE_DEFINITION_KEYS = {"winrate_buy_exp", "winrate_min_rate", "winrate_avoid_exp", "winrate_max_big"}
 
 
 @app.post("/api/settings")

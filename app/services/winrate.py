@@ -26,7 +26,9 @@ HOLD, TARGET, STOP = 20, 0.08, 0.05
 ROUND_TRIP_COST = 0.001425 * 0.3 * 2 + 0.003
 MIN_TRAIN, MIN_TEST, MIN_DATES, MIN_STOCKS = 60, 25, 15, 15
 # 判斷以「每筆期望報酬」為主：勝率高不代表賺錢（小賺大賠也能有高勝率）
-BUY_EXP, MIN_RATE, AVOID_EXP = 1.0, 0.50, 0.0  # 推薦：兩期期望 ≥ +1%、勝率 ≥ 50%；不推薦：期望 ≤ 0
+# 統一門檻（勝率模型、多數條件、AI 模型共用）：高勝率、小賠可以、不能大賠
+# 推薦：兩期 勝率 ≥ 60%、期望 > +0.2%、虧損超過 6% 的比例 ≤ 2%；不推薦：兩期期望 ≤ 0
+BUY_EXP, MIN_RATE, AVOID_EXP, MAX_BIG, BIG_LOSS = 0.2, 0.60, 0.0, 0.02, 0.06
 MAX_ORDER = 3
 status = {"running": False, "message": "", "trained_at": None}
 _lock = threading.Lock()
@@ -37,7 +39,8 @@ def params() -> dict:
     g = db.get_setting
     return {"hold_days": int(g("winrate_hold", HOLD)), "target": g("winrate_target", TARGET), "stop": g("winrate_stop", STOP),
             "buy_exp": g("winrate_buy_exp", BUY_EXP), "min_rate": g("winrate_min_rate", MIN_RATE),
-            "avoid_exp": g("winrate_avoid_exp", AVOID_EXP)}
+            "avoid_exp": g("winrate_avoid_exp", AVOID_EXP), "max_big": g("winrate_max_big", MAX_BIG), "big_loss": BIG_LOSS,
+            "exit_desc": exit_desc()}
 
 
 def label_trades(df: pd.DataFrame, hold: int = HOLD, target: float = TARGET, stop: float = STOP) -> pd.DataFrame:
@@ -64,6 +67,40 @@ def label_trades(df: pd.DataFrame, hold: int = HOLD, target: float = TARGET, sto
             res = 1 if r - ROUND_TRIP_COST > 0 else 0
         out[t], rets[t] = res, r - ROUND_TRIP_COST
     return pd.DataFrame({"y": out, "ret": rets}, index=df.index)
+
+
+def label_policy(sid: str, g: pd.DataFrame, divs: dict | None = None) -> pd.DataFrame:
+    """以統一的出場規則（移動停利，app/ml/policy.current()）標記每一天進場的結果。
+
+    價格先還原權值（除權息、分割、減資），並處理跳空、鎖漲停買不到、鎖跌停賣不掉。
+    """
+    from app.ml import exits as XT
+    from app.ml import policy as P
+    d = P.stock_arrays(sid, g, divs if divs is not None else _divs())
+    r = XT.simulate(d["o"], d["h"], d["l"], d["c"], d["ma5"], d["atr"], d["raw_c"], d["raw_h"], d["raw_l"],
+                    d["ex_day"], np.arange(len(g)), P.current())
+    out = pd.DataFrame({"y": np.nan, "ret": np.nan}, index=g.index)
+    if len(r["idx"]):
+        out.iloc[r["idx"], 0] = r["win"].astype(float)
+        out.iloc[r["idx"], 1] = r["ret"]
+    return out
+
+
+_divs_cache: dict = {}
+
+
+def _divs() -> dict:
+    """除權息表（依股票分組），訓練期間共用。"""
+    n = db.one("SELECT COUNT(*) AS n FROM dividends")["n"] if db.one("SELECT name FROM sqlite_master WHERE name='dividends'") else 0
+    if _divs_cache.get("n") != n:
+        from app.ml import features as MF
+        _divs_cache.update(n=n, data=MF.load_inputs("2100-01-01")["divs"] if n else {})
+    return _divs_cache["data"]
+
+
+def exit_desc() -> str:
+    from app.ml import policy as P
+    return P.current().describe()
 
 
 def _panel(min_avg_volume: float, min_price: float, days: int | None = None):
@@ -100,7 +137,7 @@ def build_dataset(min_avg_volume: float = 1000, min_price: float = 10, p: dict |
     rows = []
     for sid, g in panel.items():
         f = _features_for(sid, g, industry, market_bull, sector_rank)
-        lab = label_trades(g, p["hold_days"], p["target"], p["stop"])
+        lab = label_policy(sid, g)
         d = f[f["_valid"]].drop(columns="_valid")
         d["y"] = lab["y"].reindex(d.index)
         d["ret"] = lab["ret"].reindex(d.index)
@@ -121,6 +158,8 @@ def mine_rules(data: pd.DataFrame, p: dict | None = None) -> dict:
     Xte = {k: te[k].values for k in keys}
     ytr, yte = tr["y"].values, te["y"].values
     rtr, rte = tr["ret"].values, te["ret"].values
+    big_loss, max_big = p.get("big_loss", BIG_LOSS), p.get("max_big", MAX_BIG)
+    btr, bte = (rtr < -big_loss), (rte < -big_loss)
     dtr, str_ = tr["date"].values, tr["sid"].values
     base_tr, base_te = float(ytr.mean()), float(yte.mean())
     rules = []
@@ -141,14 +180,17 @@ def mine_rules(data: pd.DataFrame, p: dict | None = None) -> dict:
                 "train_n": n_tr, "train_rate": round(float(ytr[m].mean()), 4),
                 "test_n": n_te, "test_rate": round(float(yte[mt].mean()), 4),
                 "train_exp": round(float(rtr[m].mean()) * 100, 2), "test_exp": round(float(rte[mt].mean()) * 100, 2),
+                "train_big": round(float(btr[m].mean()), 4), "test_big": round(float(bte[mt].mean()), 4),
             })
     for r in rules:
         # 採用的勝率：訓練與驗證期合併（兩期都要達標才算可靠）
         r["rate"] = round((r["train_rate"] * r["train_n"] + r["test_rate"] * r["test_n"]) / (r["train_n"] + r["test_n"]), 4)
         r["n"] = r["train_n"] + r["test_n"]
         r["exp"] = round((r["train_exp"] * r["train_n"] + r["test_exp"] * r["test_n"]) / r["n"], 2)  # 每筆期望報酬 %
-        r["reliable_buy"] = (min(r["train_exp"], r["test_exp"]) >= p["buy_exp"]
-                             and min(r["train_rate"], r["test_rate"]) >= p["min_rate"])
+        r["big"] = round(max(r["train_big"], r["test_big"]), 4)
+        r["reliable_buy"] = (min(r["train_exp"], r["test_exp"]) > p["buy_exp"]
+                             and min(r["train_rate"], r["test_rate"]) >= p["min_rate"]
+                             and r["big"] <= max_big)
         r["reliable_avoid"] = max(r["train_exp"], r["test_exp"]) <= p["avoid_exp"]
     rules.sort(key=lambda r: (min(r["train_exp"], r["test_exp"]), r["n"]), reverse=True)
     return {

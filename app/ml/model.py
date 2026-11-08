@@ -51,8 +51,11 @@ def model_path():
 
 
 def gate() -> dict:
-    return {"min_rate": float(db.get_setting("ml_target_rate", TARGET_RATE)), "min_exp": MIN_EXP, "max_big": MAX_BIG,
-            "rate_lift": MIN_RATE_LIFT, "big_loss": 0.06}
+    """與勝率模型、多數條件共用同一組門檻（勝率頁設定）。"""
+    from app.services import winrate
+    p = winrate.params()
+    return {"min_rate": p["min_rate"], "min_exp": p["buy_exp"], "max_big": p["max_big"], "rate_lift": MIN_RATE_LIFT,
+            "big_loss": p["big_loss"]}
 
 
 # ======================= 資料集 =======================

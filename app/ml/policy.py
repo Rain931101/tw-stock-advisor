@@ -24,7 +24,7 @@ from app.rules import features as F
 log = logging.getLogger(__name__)
 
 # 大賠 = 虧損超過 6%（超出計畫停損：多半是跳空跌破或連續跌停）
-MIN_EXP, MAX_BIG, WORST1, BIG_LOSS = 0.2, 0.02, 9.0, 0.06
+MIN_EXP, MAX_BIG, WORST1, BIG_LOSS = 0.2, 0.02, 9.0, 0.06   # 與勝率頁的統一門檻相同
 GRID = {
     "sl_atr": [1.0, 1.5, 2.0],
     "sl_cap": [0.03, 0.04, 0.05],

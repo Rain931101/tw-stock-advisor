@@ -291,7 +291,7 @@ function winrateHtml(w) {
     <div class="wr-head"><span class="wr-rate ${w.exp > 0 ? "up" : "down"}">${w.exp > 0 ? "+" : ""}${w.exp}%</span><span>每筆期望報酬　<span class="muted">勝率 ${Math.round(w.rate * 100)}%</span></span></div>
     ${expBar(w.exp, p)}
     <p class="muted">${w.decision === "buy" ? "依據（已通過驗證的推薦組合）" : w.n_rules > 1 ? `綜合 ${w.n_rules} 個符合的條件組合（依樣本數加權）；代表組合` : "依據"}：${w.rule ? esc(w.rule.names.join(" + ")) + `（${w.rule.n.toLocaleString()} 筆；訓練 期望 ${w.rule.train_exp > 0 ? "+" : ""}${w.rule.train_exp}%・勝率 ${Math.round(w.rule.train_rate * 100)}%／驗證 期望 ${w.rule.test_exp > 0 ? "+" : ""}${w.rule.test_exp}%・勝率 ${Math.round(w.rule.test_rate * 100)}%）` : `沒有符合的條件組合，以全市場平均計`}</p>
-    <p class="muted">交易定義：隔日開盤買進，${p.hold_days} 個交易日內先到 +${Math.round(p.target * 100)}% 停利、先到 −${Math.round(p.stop * 100)}% 停損，到期以收盤出場（已扣手續費與稅）。推薦需訓練與驗證兩期期望都 ≥ +${p.buy_exp}% 且勝率 ≥ ${Math.round(p.min_rate * 100)}%。</p>
+    <p class="muted">交易定義：隔日開盤買進；${esc(p.exit_desc || "")}（已扣手續費與稅）。推薦需兩期都 勝率 ≥ ${Math.round(p.min_rate * 100)}%、期望 > +${p.buy_exp}%、虧損超過 6% 的比例 ≤ ${((p.max_big ?? 0.02) * 100).toFixed(0)}%。</p>
     ${w.matched.length > 1 ? `<details><summary>其他符合的條件組合</summary><ul class="list">${w.matched.map((r) => `<li>${esc(r.names.join(" + "))}：期望 ${r.exp > 0 ? "+" : ""}${r.exp}%、勝率 ${Math.round(r.rate * 100)}%（${r.n} 筆）</li>`).join("")}</ul></details>` : ""}
   </div>`;
 }
@@ -320,7 +320,7 @@ function basisHtml(v, isEtf) {
   const b = v.basis;
   if (!b) return `<p class="muted">${isEtf ? "ETF 不在勝率模型範圍（模型只用個股訓練），只依講義規則判斷" : "勝率模型尚未訓練，或此股資料不足以比對；結論只依講義規則"}</p>`;
   const p = b.params, sign = (x) => (x > 0 ? "+" : "") + x;
-  const gate = `推薦門檻：訓練、驗證兩期每筆期望都 ≥ +${p.buy_exp}% 且勝率 ≥ ${Math.round(p.min_rate * 100)}%`;
+  const gate = `推薦門檻：訓練、驗證兩期都要 勝率 ≥ ${Math.round((p.min_rate ?? p.gate?.min_rate ?? 0.6) * 100)}%、每筆期望 > +${p.buy_exp ?? p.min_exp}%、虧損超過 6% 的比例 ≤ ${((p.max_big ?? 0.02) * 100).toFixed(0)}%`;
   let verdictLine;
   if (v.decision === "buy" && b.pass) verdictLine = `<span class="up">✅ 達推薦門檻 → 建議買進</span>`;
   else if (v.decision === "buy") verdictLine = `<span class="up">✅ 講義進場型態全部成立且通過風控 → 建議買進</span>（歷史數字未達門檻，僅供參考）`;
@@ -332,7 +332,7 @@ function basisHtml(v, isEtf) {
     ${expBar(b.exp, p)}
     <p><b>${verdictLine}</b></p>
     <p class="muted">依據：${esc(b.title)}${b.desc ? `（${esc(b.desc)}）` : ""}${split}</p>
-    <p class="muted">${gate}。交易定義：${b.source === "ml" && v.ml ? `隔日開盤買進；${esc(v.ml.params.desc || "")}（排除鎖漲停買不到、鎖跌停賣不掉；已扣手續費與稅）` : `隔日開盤買進，${p.hold_days} 個交易日內先到 +${Math.round(p.target * 100)}% 停利、先到 −${Math.round(p.stop * 100)}% 停損，到期以收盤出場（已扣手續費與稅）`}。</p>
+    <p class="muted">${gate}。交易定義：${b.source === "ml" && v.ml ? `隔日開盤買進；${esc(v.ml.params.desc || "")}（排除鎖漲停買不到、鎖跌停賣不掉；已扣手續費與稅）` : `隔日開盤買進；${esc(p.exit_desc || "")}（跳空以開盤價成交、排除鎖漲停買不到與鎖跌停賣不掉；已扣手續費與稅）`}。</p>
   </div>`;
 }
 const pctS = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + x.toFixed(2) + "%");
@@ -450,9 +450,9 @@ loaders.winrate = async () => {
       <div class="tile"><div class="k">期望報酬 ≤ ${p.avoid_exp}% 的組合</div><div class="v">${w.avoid_count}</div><div class="muted">共 ${w.total.toLocaleString()} 種組合</div></div>
       <div class="tile"><div class="k">樣本</div><div class="v">${(w.samples.train + w.samples.test).toLocaleString()}</div><div class="muted">${w.samples.stocks} 檔，${w.period.from}～${w.period.to}</div></div>
     </div>
-    <div class="card"><p>勝率定義：訊號日隔天開盤買進，${p.hold_days} 個交易日內先到 <b>+${Math.round(p.target * 100)}%</b> 算贏、先到 <b>−${Math.round(p.stop * 100)}%</b> 算輸，到期看扣成本後是否賺錢。
+    <div class="card"><p>勝率定義：訊號日隔天開盤買進，依統一出場規則（${esc(p.exit_desc || "")}）出場，扣成本後有賺算贏。
       訓練期 ${w.period.from}～${w.period.split}、驗證期 ${w.period.split}～${w.period.to}（驗證期是模型沒看過的資料）。</p>
-      <p>判斷以<b>每筆期望報酬</b>為主：以 +${Math.round(p.target * 100)}%／−${Math.round(p.stop * 100)}% 的賠率，勝率約 ${Math.round(p.stop / (p.stop + p.target) * 100)}% 就能損益兩平，勝率高不等於賺錢。</p>
+      <p>推薦門檻：兩期都要 勝率 ≥ ${Math.round(p.min_rate * 100)}%、每筆期望 > +${p.buy_exp}%、虧損超過 6% 的比例 ≤ ${(p.max_big * 100).toFixed(0)}%（高勝率、小賺可以，但不能大賠）。</p>
       ${!w.buy_count ? `<p class="warn">目前沒有條件組合達到推薦門檻，可以到設定頁調整。</p>` : ""}</div>
     ${w.buy_rules.length ? `<div class="card"><h3>達推薦門檻的組合</h3><div class="scroll"><table>${head}${w.buy_rules.map(row).join("")}</table></div></div>` : ""}
     <div class="card"><h3>期望報酬最高的條件組合（以兩期中較差的一期排序）</h3><div class="scroll"><table>${head}${w.top.map(row).join("")}</table></div></div>
@@ -582,6 +582,7 @@ loaders.settings = async () => {
   loadAiKey();
   const s = await api("/api/settings");
   for (const [k, v] of Object.entries(s)) { const i = $(`#settings-form [name=${k}]`); if (i) { if (i.type === "checkbox") i.checked = !!v; else i.value = v; } }
+  $("#exit-desc").textContent = s.exit_desc || "—";
   $("#max-stop").innerHTML = `換算：進場點到停損點的距離不能超過 ${s.max_stop_pct}%，超過就不進場。` + (s.warnings || []).map((w) => `<br><span class="warn">⚠️ ${esc(w)}</span>`).join("");
   await loadStatus();
 };
@@ -610,7 +611,8 @@ async function saveSettings() {
     const r = await api("/api/settings", { method: "POST", body });
     dirty = false;
     saveState(`已儲存到資料庫 ✓ ${new Date().toLocaleTimeString("zh-TW", { hour12: false })}`);
-    $("#max-stop").innerHTML = `換算：進場點到停損點的距離不能超過 ${r.max_stop_pct}%，超過就不進場。` + (r.warnings || []).map((w) => `<br><span class="warn">⚠️ ${esc(w)}</span>`).join("");
+    $("#exit-desc").textContent = s.exit_desc || "—";
+  $("#max-stop").innerHTML = `換算：進場點到停損點的距離不能超過 ${r.max_stop_pct}%，超過就不進場。` + (r.warnings || []).map((w) => `<br><span class="warn">⚠️ ${esc(w)}</span>`).join("");
   } catch (err) {
     let msg = err.message; try { msg = JSON.parse(msg).detail; } catch {}
     saveState(`未儲存：${Array.isArray(msg) ? msg.map((m) => m.msg).join("；") : msg}`, "danger");

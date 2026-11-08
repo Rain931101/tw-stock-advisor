@@ -113,14 +113,13 @@
           <label>融資年利率（0.065 = 6.5%）<input name="margin_rate" type="number" step="any" inputmode="decimal"></label>
           <label>追繳維持率（1.3 = 130%）<input name="margin_maintenance" type="number" step="any" inputmode="decimal"></label>
           <p class="muted">預設為台股常見條件，請依自己券商的信用交易契約修改。</p>
-          <h3>歷史勝率與期望報酬</h3>
-          <label>推薦：每筆期望報酬至少（%，訓練與驗證兩期都要達到）<input name="winrate_buy_exp" type="number" step="any" inputmode="decimal"></label>
-          <label>推薦：勝率至少（0.5 = 50%）<input name="winrate_min_rate" type="number" step="any" inputmode="decimal"></label>
+          <h3>推薦門檻（勝率模型、多數條件、AI 模型共用）</h3>
+          <label>推薦：勝率至少（0.6 = 60%，訓練與驗證兩期都要達到）<input name="winrate_min_rate" type="number" step="any" inputmode="decimal"></label>
+          <label>推薦：每筆期望報酬至少（%）<input name="winrate_buy_exp" type="number" step="any" inputmode="decimal"></label>
+          <label>推薦：虧損超過 6% 的比例至多（0.02 = 2%，不能大賠）<input name="winrate_max_big" type="number" step="any" inputmode="decimal"></label>
           <label>不推薦：每筆期望報酬 ≤（%）<input name="winrate_avoid_exp" type="number" step="any" inputmode="decimal"></label>
-          <label>勝率定義：停利（0.08 = +8%）<input name="winrate_target" type="number" step="any" inputmode="decimal"></label>
-          <label>勝率定義：停損（0.05 = −5%）<input name="winrate_stop" type="number" step="any" inputmode="decimal"></label>
-          <label>勝率定義：最長持有交易日<input name="winrate_hold" type="number" step="any" inputmode="decimal"></label>
-          <p class="muted">以期望報酬為主判斷：勝率高不代表賺錢（停利小、停損大也能有高勝率）。修改後會自動重新訓練（約 10 秒）。</p>
+          <p class="muted">統一出場規則（勝率計算與實際持股監控相同）：<span id="exit-desc">—</span></p>
+          <p class="muted">勝率高、小賺可以，但不能大賠：期望報酬要為正，且虧損超過 6% 的交易要很少。修改後會自動重新訓練。</p>
           <div class="btns"><button>儲存</button><button type="button" class="ghost danger-text" id="reset-settings">重新設定（恢復預設值）</button><button type="button" class="ghost hidden" id="undo-reset">復原上次的設定</button><span id="save-state" class="muted"></span></div>
         </form>
       </div>
