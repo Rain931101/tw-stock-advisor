@@ -602,18 +602,51 @@ def apply_nearmatch(verdict: dict, stock: dict, price: float, fund: dict | None,
         log.warning("nearmatch %s: %s", stock["stock_id"], e)
         nm = None
     verdict["near"] = nm
+    _upgrade_near(verdict, nm, stock, price, fund, chips)
+    verdict["basis"] = decision_basis(verdict)
+    return verdict
+
+
+def _stat_fields(st: dict) -> dict:
+    return {k: st.get(k) for k in ("rate", "exp", "n", "train_rate", "test_rate", "train_exp", "test_exp")}
+
+
+def decision_basis(v: dict) -> dict | None:
+    """這張判斷卡「唯一」採用的歷史數字：結論用哪個統計，畫面最上方就只顯示那一個。"""
+    plan, wr, nm = v.get("plan") or {}, v.get("winrate"), v.get("near") or {}
+    best = nm.get("best")
+    params = (wr or {}).get("params") or nm.get("params")
+    if v["decision"] == "buy" and plan.get("setup") == "nearmatch" and best:
+        return {"source": "nearmatch", "title": f"多數條件：{best['name']}（{len(best['met'])}／{best['total']}）",
+                "desc": best["basis"], **_stat_fields(best["stats"]), "params": params, "pass": True}
+    if wr and (wr["decision"] in ("buy", "avoid") or not best):
+        rule = wr.get("rule") or {}
+        title = "條件組合：" + " + ".join(rule.get("names", [])) if rule else "全市場平均（沒有符合的條件組合）"
+        return {"source": "winrate", "title": title, "desc": "今天成立的量價／市場條件組合",
+                **_stat_fields({**rule, "rate": wr["rate"], "exp": wr["exp"]}), "params": params,
+                "pass": wr["decision"] == "buy"}
+    # 其餘：取此股今天最接近的型態統計（與「多數條件勝率」第一列一致）
+    items = [i for i in nm.get("items", []) if i.get("stats")]
+    if items:
+        it = items[0]
+        return {"source": "nearmatch", "title": f"多數條件：{it['name']}（{len(it['met'])}／{it['total']}）",
+                "desc": it["basis"], **_stat_fields(it["stats"]), "params": params, "pass": it["decision"] == "buy"}
+    return None
+
+
+def _upgrade_near(verdict: dict, nm: dict | None, stock: dict, price: float, fund: dict | None, chips: dict | None) -> None:
     if not nm or not nm["best"] or verdict["decision"] != "wait":
-        return verdict
+        return
     best = nm["best"]
     st = best["stats"]
     if fund is None:
         verdict["cautions"].append(f"「{best['name']}」多數條件成立且歷史期望 {st['exp']:+.2f}%，但基本面尚未確認，先觀望")
-        return verdict
+        return
     if not fund.get("pass"):
-        return verdict
+        return
     plan = near_plan(stock, best, nm["params"], price, fund, chips, risk_settings())
     if not plan:
-        return verdict
+        return
     day = datetime.now().date().isoformat()
     save_recommendation(plan, day, intraday=False, notify=False)
     row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, plan["stock_id"], plan["setup"]))
@@ -622,4 +655,3 @@ def apply_nearmatch(verdict: dict, stock: dict, price: float, fund: dict | None,
                            f"每筆期望報酬 {st['exp']:+.2f}%（訓練、驗證兩期都達推薦門檻）")
     verdict["reasons"] = plan["reasons"] + verdict["reasons"]
     verdict["closest"] = {"name": best["name"], "met": best["met"], "missing": best["missing"]}
-    return verdict

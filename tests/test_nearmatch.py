@@ -39,3 +39,16 @@ def test_assess_buy_and_fallback(monkeypatch):
     # 沒有統計時退回「樣本不足」，不建議買進
     a = N.assess("1101", {**m, "stats": {}}, feats={})
     assert a["best"] is None and a["items"][0]["decision"] == "unknown"
+
+
+def test_decision_basis_single_source():
+    from app.services.recommender import decision_basis
+    st = {"rate": 0.51, "exp": 1.05, "n": 367, "train_rate": 0.51, "test_rate": 0.52, "train_exp": 1.03, "test_exp": 1.12}
+    best = {"name": "沿月線", "met": ["a", "b", "c", "d"], "total": 5, "basis": "x", "stats": st}
+    wr = {"decision": "neutral", "rate": 0.44, "exp": 0.25, "rule": {"names": ["q"], "n": 10}, "params": {"buy_exp": 1}}
+    v = {"decision": "buy", "plan": {"setup": "nearmatch"}, "winrate": wr, "near": {"best": best, "items": [best]}}
+    b = decision_basis(v)
+    assert b["source"] == "nearmatch" and b["exp"] == 1.05 and b["pass"]
+    # 勝率模型判定不推薦時，以勝率模型為依據
+    v = {"decision": "avoid", "plan": None, "winrate": {**wr, "decision": "avoid", "exp": -0.5}, "near": {"best": best, "items": [best]}}
+    assert decision_basis(v)["source"] == "winrate"

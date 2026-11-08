@@ -316,6 +316,25 @@ function nearHtml(nm) {
       ${it.basis ? `<div class="muted">比對依據：${esc(it.basis)}</div>` : ""}</div>`;
   }).join("") + `<p class="muted">一個條件沒到位不直接否決：回測過去一年「同型態、缺同樣條件」的所有交易，訓練期與驗證期都達推薦門檻（期望報酬、勝率）才建議買進。</p>`;
 }
+function basisHtml(v, isEtf) {
+  const b = v.basis;
+  if (!b) return `<p class="muted">${isEtf ? "ETF 不在勝率模型範圍（模型只用個股訓練），只依講義規則判斷" : "勝率模型尚未訓練，或此股資料不足以比對；結論只依講義規則"}</p>`;
+  const p = b.params, sign = (x) => (x > 0 ? "+" : "") + x;
+  const gate = `推薦門檻：訓練、驗證兩期每筆期望都 ≥ +${p.buy_exp}% 且勝率 ≥ ${Math.round(p.min_rate * 100)}%`;
+  let verdictLine;
+  if (v.decision === "buy" && b.pass) verdictLine = `<span class="up">✅ 達推薦門檻 → 建議買進</span>`;
+  else if (v.decision === "buy") verdictLine = `<span class="up">✅ 講義進場型態全部成立且通過風控 → 建議買進</span>（歷史數字未達門檻，僅供參考）`;
+  else if (b.pass) verdictLine = `<span class="warn">歷史數字達標，但${esc(v.summary || "其他條件未通過")} → ${esc(v.label)}</span>`;
+  else verdictLine = `<span class="${v.decision === "avoid" ? "down" : "muted"}">未達推薦門檻 → ${esc(v.label)}</span>`;
+  const split = b.train_rate != null ? `（訓練 期望 ${sign(b.train_exp)}%・勝率 ${Math.round(b.train_rate * 100)}%／驗證 期望 ${sign(b.test_exp)}%・勝率 ${Math.round(b.test_rate * 100)}%）` : "";
+  return `<div class="wr">
+    <div class="wr-head"><span class="wr-rate ${b.exp > 0 ? "up" : "down"}">${sign(b.exp)}%</span><span>每筆期望報酬　<span class="muted">勝率 ${Math.round(b.rate * 100)}%${b.n ? `・${b.n.toLocaleString()} 筆` : ""}</span></span></div>
+    ${expBar(b.exp, p)}
+    <p><b>${verdictLine}</b></p>
+    <p class="muted">依據：${esc(b.title)}${b.desc ? `（${esc(b.desc)}）` : ""}${split}</p>
+    <p class="muted">${gate}。交易定義：隔日開盤買進，${p.hold_days} 個交易日內先到 +${Math.round(p.target * 100)}% 停利、先到 −${Math.round(p.stop * 100)}% 停損，到期以收盤出場（已扣手續費與稅）。</p>
+  </div>`;
+}
 function verdictHtml(v, sid) {
   if (!v) return "";
   const cls = { buy: "verdict-buy", wait: "verdict-wait", avoid: "verdict-avoid" }[v.decision];
@@ -344,10 +363,11 @@ function verdictHtml(v, sid) {
     : `<p class="muted">${v.decision === "avoid" ? "不建議買進，不提供進場、停損與目標價" : "尚未符合進場條件，條件成立後才提供進場區、停損與目標價"}</p>`;
   return `<div class="card verdict ${cls}">
     <div class="verdict-head"><span class="verdict-label">${icon} ${esc(v.label)}</span><span>${esc(v.summary || "—")}</span></div>
-    ${vSection("歷史期望報酬", wr)}
+    ${vSection("結論依據（歷史期望報酬）", basisHtml(v, isEtf))}
     ${vSection("判斷理由", vList(v.reasons))}
     ${vSection("進場條件", conds)}
     ${vSection("多數條件勝率", near)}
+    ${v.winrate ? `<details class="v-sec"><summary class="muted">其他統計參考：整體條件組合模型（不影響上方結論）</summary>${wr}</details>` : ""}
     ${vSection("注意事項", vList(v.cautions, "warn"))}
     ${vSection("操作計畫", plan)}
     <p class="muted">判斷順序：歷史期望報酬（達推薦門檻直接推薦、≤ 不推門檻不推薦）→ 基本面健檢 → 位階與格局 → 進場型態（全部成立，或多數成立且歷史勝率達門檻）→ 風控 → 大盤與籌碼。僅為規則與統計判斷，不是投資建議。</p>
