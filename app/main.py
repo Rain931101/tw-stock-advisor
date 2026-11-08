@@ -18,6 +18,7 @@ from app.rules import indicators as ind
 from app.rules import technical
 from app.data import chipdata
 from app.ml import model as ml_model
+from app.services import history
 from app.services import company, market, monitor, notifier, portfolio, recommender, sync, winrate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -400,6 +401,8 @@ def undo_reset_portfolio():
 def ml_api():
     m = ml_model.meta()
     return db.jsonable({"model": m, "status": ml_model.status, "data_status": chipdata.status,
+                        "history": {**history.status, "other_running": history.other_running(),
+                                    "progress": db.get_setting("history_progress")}, "coverage": history.coverage(),
                         "data": {k: db.one(f"SELECT COUNT(DISTINCT date) AS d FROM {k}")["d"] for k in ("chips_daily", "margin_daily")}
                         if db.one("SELECT name FROM sqlite_master WHERE name='chips_daily'") else {}})
 
@@ -425,6 +428,9 @@ JOBS = {
     "fundamentals": lambda: recommender.refresh_all_fundamentals(),
     "ml_backfill": lambda: chipdata.backfill(),
     "ml_train": lambda: ml_model.train(),
+    "history": lambda: history.backfill_history(),
+    "history_stop": lambda: history.stop(),
+    "retrain_all": lambda: (winrate.train(), ml_model.train()),
     "close_review": lambda: monitor.close_review(),
     "backup": lambda: db.backup(),
     "train": lambda: winrate.train(),

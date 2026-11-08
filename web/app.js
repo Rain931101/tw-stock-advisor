@@ -499,7 +499,10 @@ $("#wr-filter").addEventListener("change", () => { wrLimit = 100; renderWrAll();
 $("#wr-more").addEventListener("click", () => { wrLimit += 200; renderWrAll(); });
 async function loadMl() {
   const d = await api("/api/ml");
-  const m = d.model, st = d.status, ds = d.data_status;
+  const m = d.model, st = d.status, ds = d.data_status, h = d.history, cv = d.coverage;
+  const pg = h.progress;
+  $("#ml-cov").innerHTML = `資料涵蓋（目標起點 ${cv.start_target}）：日 K ${cv.prices.from}～${cv.prices.to}（${cv.prices.days} 天）・三大法人 ${cv.insti.days} 天・融資券 ${cv.margin.days} 天・加權指數自 ${cv.index.from}`
+    + ((h.running || h.other_running) && pg ? `<br>⏳ 歷史回補中：${pg.done}/${pg.total}（目前 ${pg.at}），完成後請按「重新訓練 AI 模型」與上方「重新訓練」` : "");
   $("#ml-status").textContent = [st.running ? `訓練中：${st.message}` : "", ds.running ? `資料回補：${ds.message}（${ds.done}/${ds.total}）` : "",
     d.data ? `已有法人資料 ${d.data.chips_daily || 0} 天、融資券 ${d.data.margin_daily || 0} 天` : ""].filter(Boolean).join("｜");
   if (!m) { $("#ml-body").innerHTML = `<p class="muted">尚未訓練。先按「回補法人／融資券資料」（約 30 分鐘），再按「重新訓練 AI 模型」。</p>`; return; }
@@ -520,6 +523,7 @@ async function loadMl() {
     <details><summary>特徵重要度（前 25）</summary><ul class="list">${m.importance.map((x) => `<li>${esc(x.feature)}：${x.gain.toLocaleString()}</li>`).join("")}</ul></details>`;
 }
 $("#ml-train").addEventListener("click", async () => { await api("/api/jobs/ml_train", { method: "POST" }); toast("開始訓練 AI 模型（約 1～3 分鐘）"); setTimeout(loadMl, 2000); });
+$("#ml-history").addEventListener("click", async () => { await api("/api/jobs/history", { method: "POST" }); toast("開始回補到 2021（約 4～5 小時，可隨時重開，會從斷點繼續）"); setTimeout(loadMl, 2000); });
 $("#ml-backfill").addEventListener("click", async () => { await api("/api/jobs/ml_backfill", { method: "POST" }); toast("開始回補（已抓過的日期會跳過）"); setTimeout(loadMl, 2000); });
 $("#retrain").addEventListener("click", async () => { await api("/api/jobs/train", { method: "POST" }); toast("開始重新訓練"); setTimeout(loaders.winrate, 1500); setTimeout(loaders.winrate, 15000); });
 

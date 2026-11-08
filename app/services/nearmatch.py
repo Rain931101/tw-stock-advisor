@@ -60,7 +60,7 @@ def _stats(d: pd.DataFrame, split, p: dict) -> dict | None:
 
 
 def train(panel: dict[str, pd.DataFrame], p: dict, industry: dict | None = None) -> dict:
-    industry = industry if industry is not None else W._panel(0, 0)[1]
+    industry = industry if industry is not None else W._panel(0, 0, days=30)[1]
     mb, sr = F.cross_section(panel, industry)
     parts = []
     for sid, g in panel.items():

@@ -11,7 +11,8 @@ class Settings(BaseSettings):
     # 資料
     db_path: Path = Path("data/advisor.db")
     finmind_token: str = ""
-    backfill_days: int = 400  # 日曆天，MA240 約需 1 年以上資料
+    backfill_days: int = 400  # 每日啟動時檢查補齊的日曆天數（近期缺漏）
+    history_start: str = "2021-01-01"  # 訓練用歷史資料起點（含 2022 空頭、2024 AI 行情、2025 關稅急跌）
 
     # LINE Messaging API（LINE Notify 已於 2025/3 停止服務）
     line_channel_access_token: str = ""

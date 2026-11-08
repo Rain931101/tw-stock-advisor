@@ -49,7 +49,7 @@ def gate() -> dict:
 
 
 # ======================= 資料集 =======================
-def build_dataset(min_avg_volume: float = 1000, min_price: float = 10, days: int = 420, with_labels: bool = True):
+def build_dataset(min_avg_volume: float = 1000, min_price: float = 10, days: int | None = None, with_labels: bool = True):
     from app.services import winrate
     panel, industry = winrate._panel(min_avg_volume, min_price, days)
     since = min(g.index[0] for g in panel.values()).date().isoformat()

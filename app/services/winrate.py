@@ -66,9 +66,10 @@ def label_trades(df: pd.DataFrame, hold: int = HOLD, target: float = TARGET, sto
     return pd.DataFrame({"y": out, "ret": rets}, index=df.index)
 
 
-def _panel(min_avg_volume: float, min_price: float, days: int = 420):
+def _panel(min_avg_volume: float, min_price: float, days: int | None = None):
+    """days=None：用全部歷史（訓練）；給天數則只取最近一段（今日比對，較快）。"""
     last = db.one("SELECT MAX(date) AS d FROM prices")["d"]
-    since = (datetime.fromisoformat(last) - timedelta(days=days)).date().isoformat()
+    since = (datetime.fromisoformat(last) - timedelta(days=days)).date().isoformat() if days else "1900-01-01"
     allp = db.load_all_prices(since)
     allp["date"] = pd.to_datetime(allp["date"])
     panel = {}
