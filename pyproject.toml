@@ -13,6 +13,8 @@ dependencies = [
     "apscheduler>=3.10,<4",
     "pydantic-settings>=2.6",
     "anthropic>=2.6.0",
+    "lightgbm>=4.7.0",
+    "scikit-learn>=1.9.1",
 ]
 
 [dependency-groups]

@@ -16,6 +16,8 @@ from app.config import get_settings
 from app.data import twse
 from app.rules import indicators as ind
 from app.rules import technical
+from app.data import chipdata
+from app.ml import model as ml_model
 from app.services import company, market, monitor, notifier, portfolio, recommender, sync, winrate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -24,6 +26,7 @@ WEB = Path(__file__).resolve().parent.parent / "web"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    chipdata.ensure_schema()
     db.conn()
     scheduler.start()
     yield
@@ -303,6 +306,7 @@ def stock(sid: str, fundamentals: bool = True):
             wr = None
         out["verdict"] = recommender.apply_winrate(out["verdict"], wr, info, price, fund, out["chips"])
         out["verdict"] = recommender.apply_nearmatch(out["verdict"], info, price, fund, out["chips"])
+        out["verdict"] = recommender.apply_ml(out["verdict"], info, price, fund, out["chips"])
     return db.jsonable(out)
 
 
@@ -398,6 +402,14 @@ def undo_reset_portfolio():
 
 
 # ---------------- 通知 ----------------
+@app.get("/api/ml")
+def ml_api():
+    m = ml_model.meta()
+    return db.jsonable({"model": m, "status": ml_model.status, "data_status": chipdata.status,
+                        "data": {k: db.one(f"SELECT COUNT(DISTINCT date) AS d FROM {k}")["d"] for k in ("chips_daily", "margin_daily")}
+                        if db.one("SELECT name FROM sqlite_master WHERE name='chips_daily'") else {}})
+
+
 @app.get("/api/alerts")
 def alerts(limit: int = 100, since_id: int = 0):
     return db.query("""SELECT a.*, r.status AS rec_status FROM alerts a
@@ -417,6 +429,8 @@ JOBS = {
     "scan": lambda: recommender.daily_scan(fetch_fundamentals=True),
     "tick": lambda: monitor.intraday_tick(force=True),
     "fundamentals": lambda: recommender.refresh_all_fundamentals(),
+    "ml_backfill": lambda: chipdata.backfill(),
+    "ml_train": lambda: ml_model.train(),
     "close_review": lambda: monitor.close_review(),
     "backup": lambda: db.backup(),
     "train": lambda: winrate.train(),

@@ -109,6 +109,13 @@ def execute(sql: str, params=()) -> int:
         return cur.lastrowid
 
 
+def executemany(sql: str, rows: list) -> None:
+    if not rows:
+        return
+    with tx() as c:
+        c.executemany(sql, rows)
+
+
 def now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 

@@ -38,6 +38,11 @@ def evening_scan():
     if not monitor.trading_day():
         return "not trading day"
     sync.daily_update()
+    try:  # 三大法人、融資券（機器學習特徵）
+        from app.data import chipdata
+        chipdata.sync_today()
+    except Exception:
+        log.exception("chipdata sync failed")
     return recommender.daily_scan(fetch_fundamentals=True)
 
 
@@ -58,12 +63,16 @@ def start() -> None:
     _sched.add_job(_safe(recommender.refresh_all_fundamentals), "cron", day_of_week="sat", hour=9, id="fund_weekly")
     _sched.add_job(_safe(db.backup), "cron", hour=23, minute=50, id="backup")
     _sched.add_job(_safe(winrate.train), "cron", day_of_week="sat", hour=8, id="winrate_weekly")  # 每週重新訓練勝率
+    from app.ml import model as ml_model
+    _sched.add_job(_safe(ml_model.train), "cron", day_of_week="sat", hour=8, minute=30, id="ml_weekly")  # 每週重新訓練 AI 模型
     _sched.start()
     if not any(b["file"].endswith(f"{date.today():%Y%m%d}.db") for b in db.backups()):
         threading.Thread(target=_safe(db.backup), daemon=True).start()
     threading.Thread(target=_safe(sync.backfill), daemon=True).start()
     if not winrate.model():
         threading.Thread(target=_safe(winrate.train), daemon=True).start()
+    if ml_model.meta():  # 預先算好今日 AI 模型預測，個股頁不必等
+        threading.Thread(target=_safe(ml_model.predict_today), daemon=True).start()
     if db.get_setting("fundamentals_full_pending", False):  # 上次全市場更新被中斷 → 自動接續
         threading.Thread(target=_safe(recommender.refresh_all_fundamentals), daemon=True).start()
 

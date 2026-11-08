@@ -332,8 +332,22 @@ function basisHtml(v, isEtf) {
     ${expBar(b.exp, p)}
     <p><b>${verdictLine}</b></p>
     <p class="muted">依據：${esc(b.title)}${b.desc ? `（${esc(b.desc)}）` : ""}${split}</p>
-    <p class="muted">${gate}。交易定義：隔日開盤買進，${p.hold_days} 個交易日內先到 +${Math.round(p.target * 100)}% 停利、先到 −${Math.round(p.stop * 100)}% 停損，到期以收盤出場（已扣手續費與稅）。</p>
+    <p class="muted">${gate}。交易定義：${b.source === "ml" && v.ml ? `隔日開盤買進，${v.ml.params.horizon} 個交易日內先到 +${v.ml.params.up} ATR 停利、先到 −${v.ml.params.down} ATR 停損，到期以收盤出場（排除鎖漲停買不到、鎖跌停賣不掉；已扣手續費與稅）` : `隔日開盤買進，${p.hold_days} 個交易日內先到 +${Math.round(p.target * 100)}% 停利、先到 −${Math.round(p.stop * 100)}% 停損，到期以收盤出場（已扣手續費與稅）`}。</p>
   </div>`;
+}
+const pctS = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + x.toFixed(2) + "%");
+function mlHtml(ml) {
+  if (!ml) return `<p class="muted">AI 模型尚未訓練（勝率頁 →「重新訓練 AI 模型」），或此股不在模型範圍</p>`;
+  const top = Math.max(1, Math.round((1 - ml.rank) * 100));
+  const mt = ml.market_trend === 1 ? `<span class="up">多頭（加權指數在 20MA、60MA 之上）</span>` : ml.market_trend === 0 ? `<span class="down">空頭體制（指數在 20MA 或 60MA 之下）→ 不發多頭訊號</span>` : "—";
+  const b = ml.bucket;
+  const stat = b ? `樣本外同樣排名：勝率 <b>${Math.round(b.all.rate * 100)}%</b>・每筆期望 <b class="${b.all.exp >= 0 ? "up" : "down"}">${pctS(b.all.exp)}</b>（${b.all.n.toLocaleString()} 筆）` : "排名未進入任何門檻區間";
+  const state = !ml.enabled ? `<span class="muted">模型未通過樣本外門檻，目前只顯示排名、不發推薦</span>`
+    : ml.signal ? `<span class="up">✅ 模型訊號成立（排名達前 ${Math.round((1 - ml.threshold) * 100)}%、大盤多頭）</span>`
+    : `<span class="muted">未達模型訊號（需排名前 ${Math.round((1 - ml.threshold) * 100)}% 且大盤多頭）</span>`;
+  return `<div>今日上漲機率 <b>${Math.round(ml.prob * 100)}%</b>・全市場排名前 <b>${top}%</b></div>
+    <div>${stat}</div><div>大盤體制：${mt}</div><div>${state}</div>
+    <p class="muted">三欄式標記：隔日開盤進場，+${ml.params.up} ATR 停利、−${ml.params.down} ATR 停損、${ml.params.horizon} 個交易日到期；已排除鎖漲停買不到、鎖跌停賣不掉的情況。</p>`;
 }
 function verdictHtml(v, sid) {
   if (!v) return "";
@@ -367,6 +381,7 @@ function verdictHtml(v, sid) {
     ${vSection("判斷理由", vList(v.reasons))}
     ${vSection("進場條件", conds)}
     ${vSection("多數條件勝率", near)}
+    ${vSection("AI 模型（LightGBM）", mlHtml(v.ml))}
     ${v.winrate ? `<details class="v-sec"><summary class="muted">其他統計參考：整體條件組合模型（不影響上方結論）</summary>${wr}</details>` : ""}
     ${vSection("注意事項", vList(v.cautions, "warn"))}
     ${vSection("操作計畫", plan)}
@@ -418,6 +433,7 @@ document.addEventListener("click", (e) => { if (!e.target.closest(".toolbar")) $
 // ---------------- 勝率 ----------------
 loaders.winrate = async () => {
   loadWrAll().catch(() => {});
+  loadMl().catch(() => {});
   const w = await api("/api/winrate");
   $("#wr-status").textContent = w.status?.running ? `訓練中：${w.status.message}` : (w.trained ? `最後訓練：${w.trained_at.replace("T", " ")}` : "尚未訓練");
   if (!w.trained) { $("#wr-body").innerHTML = `<p class="muted">按「重新訓練」用歷史資料計算各條件組合的勝率（約 10 秒）。</p>`; return; }
@@ -481,6 +497,30 @@ $("#wr-table").addEventListener("click", (e) => {
 $("#wr-q").addEventListener("input", () => { wrLimit = 100; renderWrAll(); });
 $("#wr-filter").addEventListener("change", () => { wrLimit = 100; renderWrAll(); });
 $("#wr-more").addEventListener("click", () => { wrLimit += 200; renderWrAll(); });
+async function loadMl() {
+  const d = await api("/api/ml");
+  const m = d.model, st = d.status, ds = d.data_status;
+  $("#ml-status").textContent = [st.running ? `訓練中：${st.message}` : "", ds.running ? `資料回補：${ds.message}（${ds.done}/${ds.total}）` : "",
+    d.data ? `已有法人資料 ${d.data.chips_daily || 0} 天、融資券 ${d.data.margin_daily || 0} 天` : ""].filter(Boolean).join("｜");
+  if (!m) { $("#ml-body").innerHTML = `<p class="muted">尚未訓練。先按「回補法人／融資券資料」（約 30 分鐘），再按「重新訓練 AI 模型」。</p>`; return; }
+  $("#ml-meta").textContent = `${m.trained_at.replace("T", " ").slice(0, 16)} 訓練｜${m.period.from}～${m.period.to}｜${m.samples.toLocaleString()} 筆、${m.stocks} 檔`;
+  const th = m.threshold, best = th.best;
+  const row = (t) => `<tr class="${t.pass ? "up" : ""}"><td>前 ${Math.round((1 - t.quantile) * 100)}%</td>
+    <td class="num">${t.select.n.toLocaleString()}</td><td class="num">${t.select.rate == null ? "—" : Math.round(t.select.rate * 100) + "%"}</td><td class="num">${pctS(t.select.exp)}</td>
+    <td class="num">${t.verify.n.toLocaleString()}</td><td class="num">${t.verify.rate == null ? "—" : Math.round(t.verify.rate * 100) + "%"}</td><td class="num">${pctS(t.verify.exp)}</td>
+    <td class="num">${t.lift.map((x) => (x == null ? "—" : pctS(x))).join(" / ")}</td><td>${t.pass ? "✅" : ""}</td></tr>`;
+  $("#ml-body").innerHTML = `
+    <p><b>${best ? `✅ 已啟用：每天模型排名前 ${Math.round((1 - best.quantile) * 100)}%（且大盤多頭）建議買進` : "⚠️ 未啟用推薦：沒有任何排名門檻在兩段樣本外期間都達到「期望 ≥ +" + m.gate.buy_exp + "%、勝率 ≥ " + Math.round(m.gate.min_rate * 100) + "%、且比同期間全體多 0.5 個百分點」"}</b></p>
+    <p class="muted">全體樣本：勝率 ${Math.round(m.base.rate * 100)}%、每筆期望 ${pctS(m.base.exp)}｜出場分布：停利 ${m.barriers.up || 0}、停損 ${m.barriers.down || 0}、到期 ${m.barriers.time || 0}</p>
+    <div class="scroll"><table><tr><th>每日排名</th><th>選取期筆數</th><th>勝率</th><th>期望</th><th>驗證期筆數</th><th>勝率</th><th>期望</th><th>比同期全體多</th><th></th></tr>${th.table.map(row).join("")}</table></div>
+    <p class="muted">選取期 ${th.base[0].n.toLocaleString()} 筆全體期望 ${pctS(th.base[0].exp)}；驗證期（${th.split} 起）${th.base[1].n.toLocaleString()} 筆全體期望 ${pctS(th.base[1].exp)}。皆為大盤多頭日、模型沒看過的樣本外預測。</p>
+    <details><summary>Purged walk-forward 各折</summary><div class="scroll"><table><tr><th>折</th><th>訓練至</th><th>測試期</th><th>AUC</th><th>樹數</th><th>測試期全體期望</th></tr>
+      ${m.folds.map((f) => `<tr><td>${f.fold}</td><td>${f.train_to}</td><td>${f.test_from}～${f.test_to}</td><td class="num">${f.auc ?? "—"}</td><td class="num">${f.best_iter}</td><td class="num">${pctS(f.base.exp)}</td></tr>`).join("")}</table></div>
+      <p class="muted">AUC 0.5 = 跟亂猜一樣；每折只用測試期之前的資料訓練，並清除最後 ${m.params.horizon + 1} 天（標籤會跨進測試期）。</p></details>
+    <details><summary>特徵重要度（前 25）</summary><ul class="list">${m.importance.map((x) => `<li>${esc(x.feature)}：${x.gain.toLocaleString()}</li>`).join("")}</ul></details>`;
+}
+$("#ml-train").addEventListener("click", async () => { await api("/api/jobs/ml_train", { method: "POST" }); toast("開始訓練 AI 模型（約 1～3 分鐘）"); setTimeout(loadMl, 2000); });
+$("#ml-backfill").addEventListener("click", async () => { await api("/api/jobs/ml_backfill", { method: "POST" }); toast("開始回補（已抓過的日期會跳過）"); setTimeout(loadMl, 2000); });
 $("#retrain").addEventListener("click", async () => { await api("/api/jobs/train", { method: "POST" }); toast("開始重新訓練"); setTimeout(loaders.winrate, 1500); setTimeout(loaders.winrate, 15000); });
 
 // ---------------- 通知 ----------------

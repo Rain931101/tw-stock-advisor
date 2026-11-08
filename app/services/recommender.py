@@ -327,6 +327,24 @@ def daily_scan(fetch_fundamentals: bool = True, max_fundamental_fetch: int = 60)
                     saved += 1
     except Exception as e:
         log.warning("nearmatch scan failed: %s", e)
+    # 機器學習推薦：模型訊號（樣本外門檻＋大盤多頭）且基本面合格
+    try:
+        from app.ml import model as ml_model
+        if ml_model.meta():
+            by_id = {u["stock_id"]: u for u in uni}
+            for sid, p in ml_model.predict_today().items():
+                if not p["signal"] or sid not in by_id:
+                    continue
+                fund = db.cache_get(f"fundamental:{sid}")
+                if not fund or not fund.get("pass"):
+                    continue
+                ml = ml_model.assess(sid)
+                price = float(groups[sid]["close"].iloc[-1]) if sid in groups else None
+                plan = price and ml and ml["bucket"] and ml_plan(by_id[sid], ml, price, fund, db.cache_get(f"chips:{sid}:20"), rs)
+                if plan and save_recommendation(plan, trade_date, intraday=False):
+                    saved += 1
+    except Exception as e:
+        log.warning("ml scan failed: %s", e)
     db.cache_set("watchlist", watch[:300])
     expire_old()
     notifier.flush()
@@ -621,6 +639,13 @@ def decision_basis(v: dict) -> dict | None:
     plan, wr, nm = v.get("plan") or {}, v.get("winrate"), v.get("near") or {}
     best = nm.get("best")
     params = (wr or {}).get("params") or nm.get("params")
+    ml = v.get("ml")
+    if v["decision"] == "buy" and plan.get("setup") == "ml" and ml and ml.get("bucket"):
+        b = ml["bucket"]
+        return {"source": "ml", "title": f"AI 模型（LightGBM）當日排名前 {round((1 - b['threshold']) * 100)}%",
+                "desc": "樣本外（模型沒看過的期間）同樣排名的交易", "rate": b["all"]["rate"], "exp": b["all"]["exp"],
+                "n": b["all"]["n"], "train_rate": b["select"]["rate"], "test_rate": b["verify"]["rate"],
+                "train_exp": b["select"]["exp"], "test_exp": b["verify"]["exp"], "params": params, "pass": True}
     if v["decision"] == "buy" and plan.get("setup") == "nearmatch" and best:
         return {"source": "nearmatch", "title": f"多數條件：{best['name']}（{len(best['met'])}／{best['total']}）",
                 "desc": best["basis"], **_stat_fields(best["stats"]), "params": params, "pass": True}
@@ -660,3 +685,69 @@ def _upgrade_near(verdict: dict, nm: dict | None, stock: dict, price: float, fun
                            f"每筆期望報酬 {st['exp']:+.2f}%（訓練、驗證兩期都達推薦門檻）")
     verdict["reasons"] = plan["reasons"] + verdict["reasons"]
     verdict["closest"] = {"name": best["name"], "met": best["met"], "missing": best["missing"]}
+
+
+# ======================= 機器學習模型（LightGBM） =======================
+def ml_plan(stock: dict, ml: dict, price: float, fund: dict | None, chips: dict | None, rs: dict) -> dict | None:
+    """操作計畫與訓練時的三欄式標記完全相同：+2 ATR 停利、−1.5 ATR 停損、10 個交易日到期。"""
+    p, atr = ml["params"], ml["atr"]
+    if not atr:
+        return None
+    stop = risk.round_tick(price - p["down"] * atr)
+    target = risk.round_tick(price + p["up"] * atr)
+    if stop <= 0 or stop >= price:
+        return None
+    sizing = risk.size_position(price, stop, rs["per_trade_capital"], rs["max_loss_per_trade"], rs["fee_discount"])
+    if not sizing.ok:
+        return None
+    b = ml["bucket"]
+    st = b["all"]
+    return {
+        "stock_id": stock["stock_id"], "name": stock.get("name"), "industry": stock.get("industry"), "market": stock.get("market"),
+        "setup": "ml", "setup_name": f"AI 模型（LightGBM）：當日排名前 {round((1 - b['threshold']) * 100)}%",
+        "score": round(60 + st["exp"] * 10, 1), "price": price, "reward_risk": round(p["up"] / p["down"], 2),
+        "entry_low": risk.round_tick(price * 0.99), "entry_high": risk.round_tick(price * 1.01),
+        "stop": stop, "stop_reason": f"進場價 − {p['down']} 倍 ATR（ATR {atr:.2f}）",
+        "targets": [{"price": target, "label": f"+{p['up']} 倍 ATR"}], "healthy_pullback": None,
+        "exit_rules": [
+            {"type": "price_below", "level": stop, "action": "sell_all", "label": f"跌破停損（−{p['down']} ATR）"},
+            {"type": "target", "level": target, "action": "sell_all", "label": f"達到停利（+{p['up']} ATR）"},
+            {"type": "time_exit", "days": p["horizon"], "action": "sell_all", "label": f"持有滿 {p['horizon']} 個交易日出場"},
+        ],
+        "reasons": [f"模型樣本外勝率 {st['rate']:.0%}、每筆期望報酬 {st['exp']:+.2f}%（{st['n']:,} 筆）",
+                    f"選取期 期望 {b['select']['exp']:+.2f}%／驗證期 期望 {b['verify']['exp']:+.2f}%，"
+                    f"都比同期間全體多 {min(b['lift']):+.2f} 個百分點以上",
+                    f"今日機率 {ml['prob']:.0%}，全市場排名前 {max(1, round((1 - ml['rank']) * 100))}%",
+                    "大盤體制：加權指數在 20MA 與 60MA 之上（多頭）"],
+        "warnings": ["機器學習模型是統計結果，訓練資料約一年，未來不保證相同"],
+        "tags": ["AI 模型"], "sizing": sizing.to_dict(), "context": None,
+        "margin": margin_option(stock, "ml", price, stop, fund, "中性", sizing.shares, rs),
+        "fundamental": None if not fund else {"score": fund["score"], "grade": fund["grade"], "metrics": fund.get("metrics", {}),
+                                             "highlights": [c for c in fund.get("checks", []) if c["status"] in ("good", "bad", "warn")][:8]},
+        "chips": None if not chips else {"summary": chips["summary"], "notes": chips["notes"]},
+        "winrate": {"rate": st["rate"], "exp": st["exp"]},
+    }
+
+
+def apply_ml(verdict: dict, stock: dict, price: float, fund: dict | None, chips: dict | None) -> dict:
+    """模型訊號（通過樣本外門檻、大盤多頭、未鎖漲停）且其他規則為「觀望」、基本面合格 → 建議買進。"""
+    try:
+        from app.ml import model as ml_model
+        ml = ml_model.assess(stock["stock_id"])
+    except Exception as e:
+        log.warning("ml %s: %s", stock["stock_id"], e)
+        ml = None
+    verdict["ml"] = ml
+    if ml and ml["signal"] and ml["bucket"] and verdict["decision"] == "wait" and fund and fund.get("pass"):
+        plan = ml_plan(stock, ml, price, fund, chips, risk_settings())
+        if plan:
+            day = trade_day()
+            save_recommendation(plan, day, intraday=False)
+            row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, plan["stock_id"], "ml"))
+            st = ml["bucket"]["all"]
+            verdict.update(decision="buy", label="建議買進", plan=plan, rec_id=row["id"] if row else None,
+                           summary=f"AI 模型排名前 {max(1, round((1 - ml['rank']) * 100))}%；樣本外同樣排名的勝率 {st['rate']:.0%}、"
+                                   f"每筆期望報酬 {st['exp']:+.2f}%（兩段測試期都達推薦門檻）")
+            verdict["reasons"] = plan["reasons"] + verdict["reasons"]
+    verdict["basis"] = decision_basis(verdict)
+    return verdict
