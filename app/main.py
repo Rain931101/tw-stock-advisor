@@ -298,15 +298,9 @@ def stock(sid: str, fundamentals: bool = True):
         stance, sectors = mv["stance"], mv["sectors"]
         price = (out["quote"] or {}).get("price") or res["context"]["close"]
         fund = out["fundamental"] if not sid.startswith("00") else None
-        out["verdict"] = recommender.stock_verdict(info, res, fund, out["chips"], price, stance, sectors)
-        try:
-            wr = recommender.winrate_for(sid)
-        except Exception as e:
-            logging.getLogger(__name__).warning("winrate %s: %s", sid, e)
-            wr = None
-        out["verdict"] = recommender.apply_winrate(out["verdict"], wr, info, price, fund, out["chips"])
-        out["verdict"] = recommender.apply_nearmatch(out["verdict"], info, price, fund, out["chips"])
-        out["verdict"] = recommender.apply_ml(out["verdict"], info, price, fund, out["chips"])
+        # 與每日掃描共用同一個判斷流程；盤後（收盤資料）才重新驗證既有推薦
+        out["verdict"] = recommender.full_verdict(info, res, fund, out["chips"], price, stance, sectors,
+                                                  save=True, revalidate=not intraday)
     return db.jsonable(out)
 
 

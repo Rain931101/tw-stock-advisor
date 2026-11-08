@@ -257,94 +257,58 @@ def daily_scan(fetch_fundamentals: bool = True, max_fundamental_fetch: int = 60)
                 candidates.append((st, sig, ctx))
     candidates.sort(key=lambda x: x[1].score, reverse=True)
 
+    # 候選：講義型態成立、勝率模型達標、多數條件達標、AI 模型訊號；最後一律交給 full_verdict 判斷
+    by_id = {u["stock_id"]: u for u in uni}
+    cand_ids = list(dict.fromkeys(st["stock_id"] for st, _, _ in candidates))
+    try:
+        from app.services import nearmatch, winrate
+        m = winrate.model()
+        feats = winrate.today_features() if m else {}
+        if m:
+            cand_ids += [sid for sid, c in feats.items() if sid in by_id and winrate.assess(c, m)["decision"] == "buy"]
+        nm_model = nearmatch.model()
+        if nm_model:
+            for sid in nearmatch.today():
+                if sid in by_id:
+                    a = nearmatch.assess(sid, nm_model, feats.get(sid) or {})
+                    if a and a["best"] and not a["weak"]:
+                        cand_ids.append(sid)
+        from app.ml import model as ml_model
+        if ml_model.meta():
+            cand_ids += [sid for sid, p in ml_model.predict_today().items() if p["signal"] and sid in by_id]
+    except Exception as e:
+        log.warning("candidate scan failed: %s", e)
+    cand_ids = list(dict.fromkeys(cand_ids))
     fetched, saved = 0, 0
-    for st, sig, ctx in candidates:
-        fund = db.cache_get(f"fundamental:{st['stock_id']}", 24 * 7)
+    for sid in cand_ids:
+        st, df = by_id[sid], groups.get(sid)
+        if df is None or len(df) < 70:
+            continue
+        fund = db.cache_get(f"fundamental:{sid}", 24 * 7)
         if fund is None and fetch_fundamentals and fetched < max_fundamental_fetch:
             fetched += 1
             try:
-                fund = _fundamental_or_none(st["stock_id"], True)
+                fund = _fundamental_or_none(sid, True)
             except QuotaExceeded:
                 fetch_fundamentals = False
         if fund is None:
-            fund = db.cache_get(f"fundamental:{st['stock_id']}")  # 過期的也先用
+            fund = db.cache_get(f"fundamental:{sid}")  # 過期的也先用
         if fund is None or not fund.get("pass"):
             continue  # 基本面不合格或未知：不推薦（兩種武器缺一不可）
         try:
-            chips = company.chips(st["stock_id"]) if fetch_fundamentals else db.cache_get(f"chips:{st['stock_id']}:20")
+            chips = company.chips(sid) if fetch_fundamentals else db.cache_get(f"chips:{sid}:20")
         except Exception:
             chips = None
-        plan = build_plan(st, sig, ctx, fund, chips, sectors, stance, rs, ctx["close"])
-        wr = winrate_for(st["stock_id"])
-        if plan and wr and wr.get("trained") and wr["decision"] == "avoid":
-            continue  # 歷史勝率低於不推門檻
-        if plan and wr and wr.get("trained"):
-            plan["winrate"] = {"rate": wr["rate"], "exp": wr["exp"]}
-            plan["reasons"].append(f"歷史勝率 {wr['rate']:.0%}、每筆期望報酬 {wr['exp']:+.2f}%")
-        if plan and save_recommendation(plan, trade_date, intraday=False):
-            saved += 1
-    # 勝率規則推薦：不必符合講義型態，只要歷史勝率達到買進門檻
-    try:
-        from app.services import winrate
-        m = winrate.model()
-        if m:
-            feats = winrate.today_features()
-            by_id = {u["stock_id"]: u for u in uni}
-            for sid, cond in feats.items():
-                if sid not in by_id:
-                    continue
-                wr = winrate.assess(cond, m)
-                if wr["decision"] != "buy":
-                    continue
-                fund = db.cache_get(f"fundamental:{sid}")
-                if fund and fund.get("fatal"):
-                    continue
-                price = float(groups[sid]["close"].iloc[-1]) if sid in groups else None
-                plan = price and winrate_plan(by_id[sid], wr, price, fund, db.cache_get(f"chips:{sid}:20"), rs)
-                if plan and save_recommendation(plan, trade_date, intraday=False):
-                    saved += 1
-    except Exception as e:
-        log.warning("winrate scan failed: %s", e)
-    # 多數條件成立推薦：型態只差少數條件，但歷史上同樣情況兩期都達推薦門檻（基本面須合格）
-    try:
-        from app.services import nearmatch, winrate
-        nm_model = nearmatch.model()
-        if nm_model:
-            by_id = {u["stock_id"]: u for u in uni}
-            feats = winrate.today_features()
-            for sid in nearmatch.today():
-                if sid not in by_id:
-                    continue
-                nm = nearmatch.assess(sid, nm_model, feats.get(sid) or {})
-                if not nm or not nm["best"] or nm["weak"]:
-                    continue
-                fund = db.cache_get(f"fundamental:{sid}")
-                if not fund or not fund.get("pass"):
-                    continue
-                price = float(groups[sid]["close"].iloc[-1]) if sid in groups else None
-                plan = price and near_plan(by_id[sid], nm["best"], nm["params"], price, fund, db.cache_get(f"chips:{sid}:20"), rs)
-                if plan and save_recommendation(plan, trade_date, intraday=False):
-                    saved += 1
-    except Exception as e:
-        log.warning("nearmatch scan failed: %s", e)
-    # 機器學習推薦：模型訊號（樣本外門檻＋大盤多頭）且基本面合格
-    try:
-        from app.ml import model as ml_model
-        if ml_model.meta():
-            by_id = {u["stock_id"]: u for u in uni}
-            for sid, p in ml_model.predict_today().items():
-                if not p["signal"] or sid not in by_id:
-                    continue
-                fund = db.cache_get(f"fundamental:{sid}")
-                if not fund or not fund.get("pass"):
-                    continue
-                ml = ml_model.assess(sid)
-                price = float(groups[sid]["close"].iloc[-1]) if sid in groups else None
-                plan = price and ml and ml["bucket"] and ml_plan(by_id[sid], ml, price, fund, db.cache_get(f"chips:{sid}:20"), rs)
-                if plan and save_recommendation(plan, trade_date, intraday=False):
-                    saved += 1
-    except Exception as e:
-        log.warning("ml scan failed: %s", e)
+        try:
+            res = technical.evaluate(df)
+            if not res["context"]:
+                continue
+            before = db.one("SELECT COUNT(*) AS n FROM recommendations WHERE stock_id=? AND trade_date=?", (sid, trade_date))["n"]
+            v = full_verdict(st, res, fund, chips, float(df["close"].iloc[-1]), stance, sectors, save=True, revalidate=True)
+            after = db.one("SELECT COUNT(*) AS n FROM recommendations WHERE stock_id=? AND trade_date=?", (sid, trade_date))["n"]
+            saved += after > before
+        except Exception as e:
+            log.warning("verdict %s failed: %s", sid, e)
     db.cache_set("watchlist", watch[:300])
     expire_old()
     notifier.flush()
@@ -488,13 +452,6 @@ def _stock_verdict(stock: dict, tech: dict, fund: dict | None, chips: dict | Non
                 blocked.append(f"{s.name}：{_plan_block_reason(s, price, rs)}")
         if plans and fund is not None:
             best = max(plans, key=lambda p: p["score"])
-            day = trade_day()
-            rid = save_recommendation(best, day, intraday=False)
-            if rid is None:
-                row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?",
-                             (day, best["stock_id"], best["setup"]))
-                rid = row["id"] if row else None
-            out["rec_id"] = rid
             out.update(decision="buy", label="建議買進", plan=best,
                        summary=f"符合「{best['setup_name']}」，進場區 {best['entry_low']}～{best['entry_high']}，"
                                f"停損 {best['stop']}，報酬／風險 {best['reward_risk']}")
@@ -588,10 +545,7 @@ def apply_winrate(verdict: dict, wr: dict | None, stock: dict, price: float, fun
         if plan is None:
             plan = winrate_plan(stock, wr, price, fund, chips, risk_settings())
         if plan:
-            day = trade_day()
-            save_recommendation(plan, day, intraday=False)
-            row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, plan["stock_id"], plan["setup"]))
-            verdict.update(decision="buy", label="建議買進", plan=plan, rec_id=row["id"] if row else None,
+            verdict.update(decision="buy", label="建議買進", plan=plan,
                            summary=f"歷史每筆期望報酬 {wr['exp']:+.2f}%、勝率 {wr['rate']:.0%}：" + " + ".join(wr["rule"]["names"]))
             if fund and not fund.get("pass"):
                 verdict["cautions"].append(f"基本面健檢未通過（{fund['grade']}）：依你的規則仍以勝率為準，請自行評估")
@@ -677,10 +631,7 @@ def _upgrade_near(verdict: dict, nm: dict | None, stock: dict, price: float, fun
     plan = near_plan(stock, best, nm["params"], price, fund, chips, risk_settings())
     if not plan:
         return
-    day = trade_day()
-    save_recommendation(plan, day, intraday=False)
-    row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, plan["stock_id"], plan["setup"]))
-    verdict.update(decision="buy", label="建議買進", plan=plan, rec_id=row["id"] if row else None,
+    verdict.update(decision="buy", label="建議買進", plan=plan,
                    summary=f"「{best['name']}」符合 {len(best['met'])}／{best['total']} 個條件；歷史上同樣情況勝率 {st['rate']:.0%}、"
                            f"每筆期望報酬 {st['exp']:+.2f}%（訓練、驗證兩期都達推薦門檻）")
     verdict["reasons"] = plan["reasons"] + verdict["reasons"]
@@ -741,13 +692,46 @@ def apply_ml(verdict: dict, stock: dict, price: float, fund: dict | None, chips:
     if ml and ml["signal"] and ml["bucket"] and verdict["decision"] == "wait" and fund and fund.get("pass"):
         plan = ml_plan(stock, ml, price, fund, chips, risk_settings())
         if plan:
-            day = trade_day()
-            save_recommendation(plan, day, intraday=False)
-            row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, plan["stock_id"], "ml"))
             st = ml["bucket"]["all"]
-            verdict.update(decision="buy", label="建議買進", plan=plan, rec_id=row["id"] if row else None,
+            verdict.update(decision="buy", label="建議買進", plan=plan,
                            summary=f"AI 模型排名前 {max(1, round((1 - ml['rank']) * 100))}%；樣本外同樣排名的勝率 {st['rate']:.0%}、"
                                    f"每筆期望報酬 {st['exp']:+.2f}%（兩段測試期都達推薦門檻）")
             verdict["reasons"] = plan["reasons"] + verdict["reasons"]
     verdict["basis"] = decision_basis(verdict)
     return verdict
+
+
+# ======================= 唯一的判斷流程（個股頁與每日掃描共用） =======================
+def full_verdict(stock: dict, res: dict, fund: dict | None, chips: dict | None, price: float, stance: str,
+                 sectors: list[dict], save: bool = True, revalidate: bool = False) -> dict:
+    """講義規則 → 勝率模型 → 多數條件 → AI 模型，全部跑完才決定結論；只有最終結論是「建議買進」才寫入推薦。
+
+    個股頁與每日掃描都呼叫這一個函式，所以「推薦頁有、個股頁卻不推薦」不會再發生。
+    revalidate：以收盤資料判斷時，若最新結論已不是買進，把該股今天的有效推薦標為失效。
+    """
+    sid = stock["stock_id"]
+    v = stock_verdict(stock, res, fund, chips, price, stance, sectors)
+    try:
+        wr = winrate_for(sid)
+    except Exception as e:
+        log.warning("winrate %s: %s", sid, e)
+        wr = None
+    v = apply_winrate(v, wr, stock, price, fund, chips)
+    v = apply_nearmatch(v, stock, price, fund, chips)
+    v = apply_ml(v, stock, price, fund, chips)
+    day = trade_day()
+    if v["decision"] == "buy" and v.get("plan") and save:
+        save_recommendation(v["plan"], day, intraday=False)
+        row = db.one("SELECT id FROM recommendations WHERE trade_date=? AND stock_id=? AND setup=?", (day, sid, v["plan"]["setup"]))
+        v["rec_id"] = row["id"] if row else None
+    if revalidate:
+        stale = db.query("SELECT id, setup FROM recommendations WHERE stock_id=? AND trade_date=? AND status='active'", (sid, day))
+        keep = v["plan"]["setup"] if v["decision"] == "buy" and v.get("plan") else None
+        for r in stale:
+            if r["setup"] != keep:
+                db.execute("UPDATE recommendations SET status='invalid' WHERE id=?", (r["id"],))
+                notifier.alert("info", f"推薦失效：{sid} {stock.get('name') or ''}",
+                               f"重新判斷結論為「{v['label']}」：{v['summary']}",
+                               dedup_key=f"recinvalid:{r['id']}", stock_id=sid, ref_type="recommendation", ref_id=r["id"])
+                v["cautions"].append(f"先前的推薦（{day}）已失效：最新判斷為「{v['label']}」")
+    return v
