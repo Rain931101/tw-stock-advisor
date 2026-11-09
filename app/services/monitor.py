@@ -8,6 +8,8 @@
 """
 import json
 import logging
+
+import pandas as pd
 from datetime import datetime, time
 
 from app import db
@@ -148,6 +150,70 @@ def intraday_tick(now: datetime | None = None, force: bool = False) -> dict:
                            "盤勢跌時資金容易集中在強勢股", dedup_key=f"mkt:drop:{day}", level="high")
     notifier.flush()
     return result
+
+
+def pre_signal_tick(now: datetime | None = None, force: bool = False) -> dict:
+    """盤中預備訊號（每 3 分鐘）：訊號成立前先預告「再到哪個價位／幾點後維持就成立」。
+
+    每檔每個型態每天只通知一次；已有推薦或持股的股票不預告。"""
+    now = now or datetime.now()
+    if not force and (not in_session(now) or not trading_day(now) or now.time() >= time(13, 20)):
+        return {"skipped": True}
+    day = now.date().isoformat()
+    iw = db.cache_get("intraday_watch") or {}
+    watch = [x["stock_id"] for x in iw.get("items", [])]
+    held = {p["stock_id"] for p in portfolio.open_positions()}
+    rec = {r["stock_id"] for r in db.query("SELECT stock_id FROM recommendations WHERE status='active' AND trade_date=?", (day,))}
+    stocks = {r["stock_id"]: r for r in db.query("SELECT * FROM stocks")}
+    board = db.cache_get(f"intraday_pre:{day}") or {}
+    sent = 0
+    todo = [sid for sid in watch if sid not in held and sid not in rec]
+    quotes = {sid: db.cache_get(f"quote:{sid}", 0.05) for sid in todo}          # 每分鐘的檢查已抓過（3 分鐘內）
+    missing = [sid for sid, q in quotes.items() if not q]
+    if missing:                                                                 # 沒有的一次批次抓（每次 50 檔）
+        quotes.update(twse.fetch_realtime([(sid, stocks.get(sid, {}).get("market", "twse")) for sid in missing]))
+    for sid in watch:
+        if sid in held or sid in rec:
+            board.pop(sid, None)
+            continue
+        q = quotes.get(sid)
+        if not q or q.get("price") is None:
+            continue
+        hist = db.load_prices(sid)
+        hist = hist[hist.index < pd.Timestamp(day)]
+        try:
+            pres = technical.pre_signals(hist, q, day, now)
+        except Exception as e:
+            log.warning("pre signal %s: %s", sid, e)
+            continue
+        items = []
+        for p in pres:
+            plan = recommender.intraday_pre(stocks.get(sid, {"stock_id": sid}), p, q["price"])
+            if not plan:
+                continue
+            p.pop("_res", None)
+            p.update(stop=plan["stop"], entry_low=plan["entry_low"], entry_high=plan["entry_high"], at=now.strftime("%H:%M"))
+            items.append(p)
+            name = stocks.get(sid, {}).get("name", "")
+            gh, gm = map(int, p["gate"].split(":"))
+            wait = now.time() < time(gh, gm)
+            if p["kind"] == "time":
+                how = f"條件已全部到位，講義規定 {p['gate']} 後確認：屆時價格維持在 {q['price']} 附近（不跌破停損 {plan['stop']}）即成立"
+            else:
+                how = (f"還差：{'、'.join(p['missing'])}；價格{'漲到' if p['dist'] > 0 else '回到'} {p['trigger']}"
+                       f"（距現價 {p['dist']:+.1f}%）" + (f"並在 {p['gate']} 後維持即成立" if wait else "即成立"))
+            notifier.alert("pre", f"盤中預備訊號：{sid} {name}｜{p['name']}",
+                           f"{how}\n現價 {q['price']}，成立後預計進場區 {plan['entry_low']}~{plan['entry_high']}、停損 {plan['stop']}\n"
+                           "這是預告，還沒成立；成立時會再發「盤中符合進場」通知",
+                           dedup_key=f"pre:{day}:{sid}:{p['setup']}", stock_id=sid, level="info")
+            sent += 1
+        if items:
+            board[sid] = items
+        else:
+            board.pop(sid, None)
+    db.cache_set(f"intraday_pre:{day}", board)
+    notifier.flush()
+    return {"checked": len(watch), "pre": len(board)}
 
 
 def close_review(now: datetime | None = None) -> int:

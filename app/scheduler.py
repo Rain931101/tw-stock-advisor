@@ -89,6 +89,9 @@ def start() -> None:
     second = "5" if s.monitor_interval_sec >= 60 else f"*/{max(s.monitor_interval_sec, 20)}"
     _sched.add_job(_safe(monitor.intraday_tick), "cron", day_of_week="mon-fri", hour="9-13", second=second,
                    max_instances=1, coalesce=True, misfire_grace_time=30, id="intraday")
+    # 盤中預備訊號：每 3 分鐘（比進場判斷慢，獨立排程不拖慢每分鐘的檢查）
+    _sched.add_job(_safe(monitor.pre_signal_tick), "cron", day_of_week="mon-fri", hour="9-13", minute="*/3", second=30,
+                   max_instances=1, coalesce=True, misfire_grace_time=60, id="pre_signal")
     _sched.add_job(_safe(after_close), "cron", day_of_week="mon-fri", hour=14, minute=40, id="after_close")
     # 三大法人與融資券約 15:00~21:00 陸續公布
     _sched.add_job(_safe(evening_scan), "cron", day_of_week="mon-fri", hour=21, minute=30, id="evening_scan")

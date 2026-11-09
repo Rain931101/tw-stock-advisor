@@ -397,7 +397,8 @@ def undo_reset_portfolio():
 @app.get("/api/intraday-watch")
 def intraday_watch_api():
     w = db.cache_get("intraday_watch") or {"items": []}
-    return {**w, "in_session": monitor.in_session(), "interval_sec": get_settings().monitor_interval_sec}
+    pre = db.cache_get(f"intraday_pre:{datetime.now().date().isoformat()}") or {}
+    return {**w, "pre": pre, "in_session": monitor.in_session(), "interval_sec": get_settings().monitor_interval_sec}
 
 
 @app.get("/api/ml")

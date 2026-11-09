@@ -430,3 +430,16 @@ def test_synthetic_bar_estimates_full_day_volume():
     out = technical.synthetic_bar(df, {"price": 10.5, "open": 10, "high": 10.6, "low": 10, "volume": 300}, "2026-01-08", now=now)
     assert abs(out["volume"].iloc[-1] - ind.estimated_volume(300, now)) < 1e-9
     assert out["volume"].iloc[-1] > 300 and out["vol_est"].iloc[-1] == 1.0
+
+
+def test_pre_signals_quiet_in_opening_garbage_time():
+    """開盤 5 分鐘是垃圾時間，不發預備訊號。"""
+    from datetime import datetime
+    import numpy as np
+    import pandas as pd
+    from app.rules import technical
+    idx = pd.bdate_range("2026-01-01", periods=130)
+    c = np.linspace(50, 80, 130)
+    df = pd.DataFrame({"open": c, "high": c * 1.01, "low": c * 0.99, "close": c, "volume": 1000.0, "value": 0.0}, index=idx)
+    q = {"price": 80.5, "open": 80, "high": 80.6, "low": 79.9, "volume": 50}
+    assert technical.pre_signals(df, q, "2026-07-01", datetime(2026, 7, 1, 9, 3)) == []

@@ -839,3 +839,17 @@ def intraday_entry(stock: dict, res: dict, price: float, day: str) -> int | None
     plan.setdefault("tags", []).append("盤中")
     plan["setup_name"] = plan["setup_name"]
     return save_recommendation(plan, day, intraday=True)
+
+
+def intraday_pre(stock: dict, pre: dict, price: float) -> dict | None:
+    """預備訊號是否「成立後也會通過檢查」：用觸發價、判斷時間做一次與盤中進場相同的判斷（不寫入推薦）。"""
+    sid = stock["stock_id"]
+    fund = db.cache_get(f"fundamental:{sid}")
+    if not fund or not fund.get("pass"):
+        return None
+    mv = db.cache_get("market_verdict", 24) or {"stance": "中性", "sectors": db.cache_get("sectors") or []}
+    px = pre.get("trigger") or price
+    v = stock_verdict(stock, pre["_res"], fund, db.cache_get(f"chips:{sid}:20"), px, mv["stance"], mv["sectors"])
+    if v["decision"] != "buy" or not v.get("plan"):
+        return None
+    return attach_trailing(v["plan"], sid)   # 與正式推薦相同的停損（最多 −5%）

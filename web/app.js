@@ -106,10 +106,16 @@ let recCache = [];
 async function loadIntradayWatch() {
   const w = await api("/api/intraday-watch");
   const items = w.items || [];
-  $("#iw-meta").textContent = `${items.length} 檔${w.date ? `｜依 ${w.date} 收盤建立` : ""}｜${w.in_session ? `盤中監控中（每 ${w.interval_sec} 秒）` : "收盤後，下一個交易日 9:00 開始監控"}`;
-  $("#iw-table").innerHTML = `<tr><th>股票</th><th>最接近的型態</th><th>已符合</th><th>還差</th></tr>` + items.map((x) =>
+  $("#iw-meta").textContent = `${Object.keys(w.pre || {}).length ? `🔔 ${Object.keys(w.pre).length} 檔預備中｜` : ""}${items.length} 檔${w.date ? `｜依 ${w.date} 收盤建立` : ""}｜${w.in_session ? `盤中監控中（每 ${w.interval_sec} 秒）` : "收盤後，下一個交易日 9:00 開始監控"}`;
+  const pre = w.pre || {};
+  const preTxt = (sid) => (pre[sid] || []).map((p) => p.kind === "time"
+    ? `🔔 ${esc(p.name)}：條件到位，${p.gate} 後維持即成立（停損 ${p.stop}）`
+    : `🔔 ${esc(p.name)}：價格到 ${p.trigger}（${p.dist > 0 ? "+" : ""}${p.dist}%）即成立（停損 ${p.stop}）`).join("<br>");
+  const sorted = [...items].sort((a, b) => (pre[b.stock_id] ? 1 : 0) - (pre[a.stock_id] ? 1 : 0));
+  $("#iw-table").innerHTML = `<tr><th>股票</th><th>最接近的型態（收盤時）</th><th>已符合</th><th>還差</th><th>盤中預備訊號</th></tr>` + sorted.map((x) =>
     `<tr><td><a href="#" data-sid="${x.stock_id}">${x.stock_id} ${esc(x.name || "")}</a></td><td>${esc(x.setup)}</td><td class="num">${x.met}／${x.total}</td>
-     <td>${x.missing.length ? x.missing.map(esc).join("、") : `<span class="muted">條件都到位，等盤中價格進入可操作範圍</span>`}</td></tr>`).join("");
+     <td>${x.missing.length ? x.missing.map(esc).join("、") : `<span class="muted">條件都到位，等盤中價格進入可操作範圍</span>`}</td>
+     <td>${preTxt(x.stock_id) || `<span class="muted">—</span>`}</td></tr>`).join("");
 }
 loaders.recs = async () => {
   loadIntradayWatch().catch(() => {});
@@ -539,7 +545,7 @@ $("#ml-backfill").addEventListener("click", async () => { await api("/api/jobs/m
 $("#retrain").addEventListener("click", async () => { await api("/api/jobs/train", { method: "POST" }); toast("開始重新訓練"); setTimeout(loaders.winrate, 1500); setTimeout(loaders.winrate, 15000); });
 
 // ---------------- 通知 ----------------
-const ICON = { buy: "🟢", stop: "🔴", reduce: "🟠", target: "🎯", info: "ℹ️", market: "📊" };
+const ICON = { pre: "🔔", buy: "🟢", stop: "🔴", reduce: "🟠", target: "🎯", info: "ℹ️", market: "📊" };
 let lastAlertId = 0;
 const REC_STATUS = { active: ["up", "有效推薦"], bought: ["muted", "已買進"], dismissed: ["muted", "已按不買"], expired: ["muted", "已過期"], invalid: ["down", "已失效"] };
 loaders.alerts = async () => {

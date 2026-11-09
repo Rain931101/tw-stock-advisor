@@ -418,3 +418,63 @@ def synthetic_bar(df: pd.DataFrame, quote: dict, day: str, now: datetime | None 
     )
     base = df[df.index < pd.Timestamp(day)]
     return pd.concat([base, bar])
+
+
+# ======================= 盤中預備訊號（訊號成立前的預告） =======================
+# 講義的盤中判斷時間：9:30 前的壓回多是洗盤；季線、月線、反彈類要 12:00 後確認有撐
+GATE = {"breakout": (9, 30), "ma5_pullback": (9, 30), "ma60_reclaim": (12, 0), "ma20_ride": (12, 0),
+        "rebound_ma5": (12, 0), "climax_bottom": (12, 0)}
+_STEPS = [s / 1000 for s in (5, -5, 10, -10, 15, -15, 20, -20, 25, -25, 30, -30)]   # 現價 ±0.5% ～ ±3%
+
+
+def pre_signals(hist: pd.DataFrame, quote: dict, day: str, now: datetime, max_missing: int = 1) -> list[dict]:
+    """盤中訊號成立「之前」的預告：
+      time：條件都到位，只差講義的判斷時間（9:30／12:00）→ 時間到若維持即成立
+      price：只差 1 個條件，且價格到某個位置就會成立 → 回傳觸發價與距離
+    垃圾時間、空方格局、量縮緩跌不預告（盤中訊號本來就會被擋下）。"""
+    price = quote.get("price")
+    if not price:
+        return []
+    base = synthetic_bar(hist, quote, day, now=now)
+    ctx = build_context(base, now, True)
+    if ctx is None or ctx.garbage or ctx.struct == "downtrend" or (ctx.t and ctx.t < time(9, 5)):
+        return []
+    out = []
+    for fn in SETUPS:
+        try:
+            s = fn(ctx)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if s.triggered or (ctx.bleed and s.setup != "climax_bottom"):
+            continue
+        gate = GATE.get(s.setup, (12, 0))
+        info = {"setup": s.setup, "name": s.name, "met": s.reasons, "missing": s.missing,
+                "gate": f"{gate[0]}:{gate[1]:02d}", "price": price}
+        at = now if ctx.after(*gate) else now.replace(hour=gate[0], minute=gate[1], second=0)
+        if not s.missing:
+            if not ctx.after(*gate):
+                res = _verify(hist, quote, day, at, s.setup)
+                if res is not None:
+                    out.append({**info, "kind": "time", "_res": res})
+            continue
+        if len(s.missing) > max_missing or any("量" in m for m in s.missing):
+            continue   # 量能條件無法靠價格達成
+        for step in _STEPS:
+            p = round_tick(price * (1 + step))
+            q2 = {**quote, "price": p, "high": max(quote.get("high") or p, p), "low": min(quote.get("low") or p, p)}
+            ctx2 = build_context(synthetic_bar(hist, q2, day, now=now), now, True)
+            try:
+                s2 = fn(ctx2) if ctx2 else None
+            except (KeyError, TypeError, ValueError):
+                s2 = None
+            if s2 is not None and not s2.missing:
+                res = _verify(hist, q2, day, at, s.setup)   # 用講義完整的盤中判斷（含停損、操作空間、時間）確認真的會成立
+                if res is not None:
+                    out.append({**info, "kind": "price", "trigger": p, "dist": round(step * 100, 1), "_res": res})
+                break
+    return out
+
+
+def _verify(hist: pd.DataFrame, quote: dict, day: str, at: datetime, setup: str) -> dict | None:
+    res = evaluate(synthetic_bar(hist, quote, day, now=at), now=at, intraday=True)
+    return res if any(sg.setup == setup and sg.triggered for sg in res["signals"]) else None
