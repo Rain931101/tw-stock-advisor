@@ -24,3 +24,17 @@ def test_band_follows_night_move():
     b = FC._band(d, "night_ret")
     assert 0.8 < b["slope"] < 1.0                      # 明天漲跌大致跟著夜盤
     assert abs(b["hi50"] - 0.5) < 0.2 and abs(b["lo50"] + 0.5) < 0.2
+
+
+def test_gapfade_intraday_check(monkeypatch):
+    from datetime import datetime
+    from app.services import gapfade as G
+    monkeypatch.setattr(G, "stats", lambda: {"intraday": {"checks": {"09:15": {"fade_below": 0.73, "flat_below": 0.39,
+                                                                               "fade_above": 0.22, "flat_above": 0.1, "n_below": 44}}}})
+    monkeypatch.setattr(G, "premarket_today", lambda: None)
+    q = {"open": 20200.0, "prev_close": 20000.0, "price": 20150.0}          # 開高 1%，現在跌破開盤價
+    r = G.intraday_check(q, datetime(2026, 1, 5, 9, 20))
+    assert r and r["gap"] == 1.0 and r["check"] == "09:15" and r["stats"]["fade_below"] == 0.73
+    assert G.intraday_check({**q, "price": 20250.0}, datetime(2026, 1, 5, 9, 20)) is None   # 沒跌破開盤價
+    assert G.intraday_check({**q, "open": 20050.0, "price": 20040.0}, datetime(2026, 1, 5, 9, 20)) is None  # 開高不到 0.5%
+    assert G.intraday_check(q, datetime(2026, 1, 5, 11, 0)) is None          # 只在 9:05～10:05 判斷

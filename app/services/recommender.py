@@ -837,6 +837,9 @@ def intraday_entry(stock: dict, res: dict, price: float, day: str) -> int | None
         return None   # 歷史期望報酬 ≤ 0：不推薦（與盤後一致）
     plan = attach_trailing(v["plan"], sid)
     plan.setdefault("tags", []).append("盤中")
+    gf = db.cache_get(f"gapfade:{day}")
+    if gf:
+        plan["warnings"].insert(0, f"今天大盤開高 {gf['gap']:+.2f}% 後跌破開盤價（開高走低警示）：進場宜保守、可分批")
     plan["setup_name"] = plan["setup_name"]
     return save_recommendation(plan, day, intraday=True)
 

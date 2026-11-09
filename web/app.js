@@ -31,7 +31,7 @@ setInterval(() => { $("#clock").textContent = new Date().toLocaleString("zh-TW",
 async function loadForecast() {
   const el = $("#forecast");
   let f;
-  try { f = await api("/api/market/forecast"); } catch (e) { el.innerHTML = `<h3>明日大盤預測</h3><p class="muted">${esc(e.message)}</p>`; return; }
+  try { f = window.__fc = await api("/api/market/forecast"); } catch (e) { el.innerHTML = `<h3>明日大盤預測</h3><p class="muted">${esc(e.message)}</p>`; return; }
   const p = Math.round(f.prob_up * 100), cls = f.prob_up >= 0.6 ? "up" : f.prob_up <= 0.4 ? "down" : "";
   const n = f.night, r = f.range, o = f.model.oos;
   const src = n ? `已納入${esc(n.source)} ${n.night_ret > 0 ? "+" : ""}${n.night_ret}%（${esc(n.time)}）` : "收盤後預測（夜盤 15:00 開盤後會自動更新，準確率較高）";
@@ -42,10 +42,36 @@ async function loadForecast() {
       <div class="tile"><div class="k">預估區間（中位數）</div><div class="v">${fmt(r.low, 0)}～${fmt(r.high, 0)}</div><div class="muted">較寬區間 ${fmt(r.low10, 0)}～${fmt(r.high90, 0)}（歷史上約 ${Math.round(r.coverage80 * 100)}% 的日子落在內）</div></div>
     </div>
     ${f.reasons.length ? `<p>主要原因：${f.reasons.map((x) => `<span class="chip ${x.effect === "偏多" ? "up" : "down"}">${esc(x.feature)} ${x.value > 0 ? "+" : ""}${x.value}｜${x.effect}</span>`).join("")}</p>` : ""}
+    <div id="gapfade"></div>
     <p class="muted">${esc(f.note)}。${f.mode === "night" ? "" : "收盤當下沒有夜盤資訊，方向預測和猜漲差不多，請以區間為主參考；"}模型只用收盤（與夜盤）以前就知道的資料，以走勢前進方式在沒看過的期間驗證（${o.from} 起 ${o.n} 天）。僅為統計預測，不是投資建議。</p>`;
 }
+async function loadGapfade(f) {
+  const g = await api("/api/market/gapfade");
+  const pm = g.premarket, st = g.stats || {}, ps = st.premarket, it = st.intraday;
+  const P = (x) => (x == null ? "—" : Math.round(x * 100) + "%");
+  const gapUp = f && f.center / f.close - 1 >= 0.005;
+  let html = `<h4>開高走低判斷（講義〈判斷大盤〉）</h4>`;
+  if (g.today) html += `<p class="warn"><b>⚠️ 今天已觸發開高走低警示：</b>開高 ${g.today.gap}% 後跌破開盤價（${g.today.check}，${g.today.drop_from_open}%）</p>`;
+  if (gapUp) html += `<p>預估明天${f.mode === "night" ? "依夜盤" : ""}開高約 ${pct((f.center / f.close - 1) * 100)}：開盤後留意是否跌破開盤價。</p>`;
+  if (pm && ps) {
+    html += `<ul class="list">
+      <li>${pm.A ? "🔴" : "⚪"} 正價差擴大＋外資期貨空單增加：${pm.A ? "<b>成立</b>" : "未成立"}
+        <span class="muted">（價差 ${pm.basis_prev ?? "—"} → ${pm.basis ?? "—"}、外資空單 ${pm.short_chg > 0 ? "+" : ""}${pm.short_chg ?? "—"} 口）｜歷史：成立後開高的日子收盤低於開盤 ${P(ps.A.fade)}（${ps.A.n} 天），所有開高日 ${P(ps.base.fade)}</span></li>
+      <li>${pm.B ? "🔴" : "⚪"} 外資 BP 增加 > BC 增加：${pm.B ? "<b>成立</b>" : "未成立"}
+        <span class="muted">（BC ${pm.bc_chg > 0 ? "+" : ""}${pm.bc_chg ?? "—"}、BP ${pm.bp_chg > 0 ? "+" : ""}${pm.bp_chg ?? "—"} 口）｜歷史：成立後開高的日子收盤低於開盤 ${P(ps.B.fade)}（${ps.B.n} 天）</span></li>
+    </ul>
+    <p class="muted">盤前規則驗證（${ps.period[0]}～${ps.period[1]}，${ps.gap_days} 個開高 ≥${st.gap}% 的日子）：所有開高日只有 ${P(ps.base.fade)} 收盤低於開盤、${P(ps.base.flat)} 回到平盤附近，開盤到收盤平均 ${ps.base.oc > 0 ? "+" : ""}${ps.base.oc}%。這兩條盤前規則在這段期間<b>沒有明顯提高</b>開高走低的機率，請當作參考。</p>`;
+  }
+  if (it && it.checks) {
+    const rows = Object.entries(it.checks).map(([t, c]) => `<tr><td>${t}</td><td class="num">${c.n_below}</td><td class="num"><b>${P(c.fade_below)}</b></td><td class="num">${P(c.flat_below)}</td><td class="num">${P(c.fade_above)}</td></tr>`).join("");
+    html += `<details open><summary>盤中確認：開高後跌破開盤價（${it.period ? it.period[0] + "～" + it.period[1] : ""}，${it.days} 個開高日）</summary>
+      <div class="scroll"><table><tr><th>到這個時間</th><th>已跌破開盤價的天數</th><th>收盤低於開盤</th><th>回到平盤附近</th><th>沒跌破時收低於開</th></tr>${rows}</table></div>
+      <p class="muted">盤中每分鐘檢查：加權開高 ≥${st.gap}% 後跌破開盤價，就發「開高走低警示」，盤中進場通知也會加註保守進場。</p></details>`;
+  }
+  $("#gapfade").innerHTML = html;
+}
 loaders.market = async () => {
-  loadForecast().catch(() => {});
+  loadForecast().then(() => loadGapfade(window.__fc)).catch(() => {});
   const m = await api("/api/market").catch((e) => ({ errors: [e.message] }));
   const idx = m.indices || {};
   const tiles = Object.values(idx).map((x) => `<div class="tile"><div class="k">${x.name}　${esc(x.time || "")}</div>

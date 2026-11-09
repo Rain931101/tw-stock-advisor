@@ -143,6 +143,22 @@ def intraday_tick(now: datetime | None = None, force: bool = False) -> dict:
 
     # 4) 大盤急殺提醒
     idx = twse.fetch_realtime([("t00", "index")]).get("t00")
+    # 4-1) 開高走低警示（講義：加權開高 1~1.5% 容易回平盤）：開高後跌破開盤價 → 附歷史機率提醒
+    try:
+        from app.services import gapfade
+        gf = gapfade.intraday_check(idx or {}, now)
+        if gf:
+            db.cache_set(f"gapfade:{day}", gf)
+            st = gf.get("stats") or {}
+            hist = (f"\n歷史上（2020/9 起開高日）{gf['check']} 已跌破開盤價時：收盤低於開盤 {st['fade_below']:.0%}、"
+                    f"回到平盤附近 {st['flat_below']:.0%}（沒跌破的日子分別是 {st['fade_above']:.0%}、{st['flat_above']:.0%}，{st['n_below']} 天）"
+                    if st.get("fade_below") is not None else "")
+            notifier.alert("market", f"開高走低警示：加權開高 {gf['gap']:+.2f}% 後跌破開盤價",
+                           f"開盤 {gf['open']:.0f}、現在 {gf['price']:.0f}（{gf['drop_from_open']:+.2f}%）{hist}\n"
+                           "講義：開高走低時不要追高；持股可考慮趁高減碼，等站回開盤價或收盤確認再加碼",
+                           dedup_key=f"gapfade:{day}", level="high")
+    except Exception as e:
+        log.warning("gapfade: %s", e)
     if idx and idx.get("price") and idx.get("prev_close"):
         chg = (idx["price"] / idx["prev_close"] - 1) * 100
         if chg <= -2:

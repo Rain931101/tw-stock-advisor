@@ -404,6 +404,13 @@ def market_forecast_api():
         raise HTTPException(503, f"明日大盤預測暫時無法計算：{e}")
 
 
+@app.get("/api/market/gapfade")
+def gapfade_api():
+    from app.services import gapfade
+    return db.jsonable({"premarket": gapfade.premarket_today(), "stats": gapfade.stats(),
+                        "today": db.cache_get(f"gapfade:{datetime.now().date().isoformat()}")})
+
+
 @app.get("/api/intraday-watch")
 def intraday_watch_api():
     w = db.cache_get("intraday_watch") or {"items": []}

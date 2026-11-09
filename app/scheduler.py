@@ -44,9 +44,15 @@ def evening_scan():
         chipdata.sync_today()
     except Exception:
         log.exception("chipdata sync failed")
-    try:  # 臺指期日資料（明日大盤預測）
+    try:  # 臺指期日資料（明日大盤預測）、法人期貨／選擇權未平倉、開高日盤中走勢（開高走低驗證）
         from app.data import futures
         futures.sync_recent()
+        futures.backfill_inst(recent_days=10)
+        today = date.today().isoformat()
+        row = db.one("SELECT open, (SELECT close FROM index_daily WHERE code='TAIEX' AND date<? ORDER BY date DESC LIMIT 1) AS prev "
+                     "FROM index_daily WHERE code='TAIEX' AND date=?", (today, today))
+        if row and row["prev"] and row["open"] / row["prev"] - 1 >= 0.005:
+            futures.backfill_intraday([today])
         from app.services import forecast
         forecast.predict(force=True)
     except Exception:
