@@ -38,6 +38,7 @@ def evening_scan():
     if not monitor.trading_day():
         return "not trading day"
     sync.daily_update()
+    db.cache_set(f"evening_done:{date.today().isoformat()}", True)
     try:  # 三大法人、融資券（機器學習特徵）
         from app.data import chipdata
         chipdata.sync_today()
@@ -46,15 +47,48 @@ def evening_scan():
     return recommender.daily_scan(fetch_fundamentals=True)
 
 
+_catch_lock = threading.Lock()
+
+
+def catch_up() -> str:
+    """電腦睡眠／關機錯過排程時補做：交易日 14:35 後還沒有今天的日 K → 收盤同步＋掃描；
+    21:35 後還沒有今天的法人／融資券 → 晚間掃描。每 15 分鐘與啟動時各檢查一次。"""
+    from datetime import datetime
+    now = datetime.now()
+    if now.weekday() >= 5 or now.hour * 60 + now.minute < 14 * 60 + 35:
+        return "not yet"
+    if not _catch_lock.acquire(blocking=False):
+        return "running"
+    try:
+        today = now.date().isoformat()
+        has_prices = db.one("SELECT 1 AS x FROM prices WHERE date=? LIMIT 1", (today,)) is not None
+        if not has_prices:
+            if not monitor.trading_day(now):
+                return "not trading day"
+            log.info("catch-up: 補做收盤同步與掃描")
+            return f"after_close: {after_close()}"
+        if now.hour * 60 + now.minute >= 21 * 60 + 35:
+            has_chips = db.one("SELECT 1 AS x FROM ml_sync WHERE kind='margin' AND date=?", (today,)) is not None
+            if not has_chips and not db.cache_get(f"evening_done:{today}"):
+                log.info("catch-up: 補做晚間掃描")
+                out = evening_scan()
+                db.cache_set(f"evening_done:{today}", True)
+                return f"evening: {out}"
+        return "up to date"
+    finally:
+        _catch_lock.release()
+
+
 def start() -> None:
     global _sched
     s = get_settings()
     if not s.scheduler_enabled or _sched:
         return
-    _sched = BackgroundScheduler(timezone="Asia/Taipei")
+    _sched = BackgroundScheduler(timezone="Asia/Taipei",
+                                 job_defaults={"coalesce": True, "misfire_grace_time": 6 * 3600, "max_instances": 1})
     second = "5" if s.monitor_interval_sec >= 60 else f"*/{max(s.monitor_interval_sec, 20)}"
     _sched.add_job(_safe(monitor.intraday_tick), "cron", day_of_week="mon-fri", hour="9-13", second=second,
-                   max_instances=1, coalesce=True, id="intraday")
+                   max_instances=1, coalesce=True, misfire_grace_time=30, id="intraday")
     _sched.add_job(_safe(after_close), "cron", day_of_week="mon-fri", hour=14, minute=40, id="after_close")
     # 三大法人與融資券約 15:00~21:00 陸續公布
     _sched.add_job(_safe(evening_scan), "cron", day_of_week="mon-fri", hour=21, minute=30, id="evening_scan")
@@ -65,7 +99,9 @@ def start() -> None:
     _sched.add_job(_safe(winrate.train), "cron", day_of_week="sat", hour=8, id="winrate_weekly")  # 每週重新訓練勝率
     from app.ml import model as ml_model
     _sched.add_job(_safe(ml_model.train), "cron", day_of_week="sat", hour=8, minute=30, id="ml_weekly")  # 每週重新訓練 AI 模型
+    _sched.add_job(_safe(catch_up), "interval", minutes=15, id="catch_up", misfire_grace_time=600)
     _sched.start()
+    threading.Thread(target=_safe(catch_up), daemon=True).start()
     if not any(b["file"].endswith(f"{date.today():%Y%m%d}.db") for b in db.backups()):
         threading.Thread(target=_safe(db.backup), daemon=True).start()
     threading.Thread(target=_safe(sync.backfill), daemon=True).start()
