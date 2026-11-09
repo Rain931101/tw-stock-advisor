@@ -44,6 +44,13 @@ def evening_scan():
         chipdata.sync_today()
     except Exception:
         log.exception("chipdata sync failed")
+    try:  # 臺指期日資料（明日大盤預測）
+        from app.data import futures
+        futures.sync_recent()
+        from app.services import forecast
+        forecast.predict(force=True)
+    except Exception:
+        log.exception("futures/forecast failed")
     return recommender.daily_scan(fetch_fundamentals=True)
 
 
@@ -101,7 +108,9 @@ def start() -> None:
     _sched.add_job(_safe(db.backup), "cron", hour=23, minute=50, id="backup")
     _sched.add_job(_safe(winrate.train), "cron", day_of_week="sat", hour=8, id="winrate_weekly")  # 每週重新訓練勝率
     from app.ml import model as ml_model
-    _sched.add_job(_safe(ml_model.train), "cron", day_of_week="sat", hour=8, minute=30, id="ml_weekly")  # 每週重新訓練 AI 模型
+    _sched.add_job(_safe(ml_model.train), "cron", day_of_week="sat", hour=8, minute=30, id="ml_weekly")
+    from app.services import forecast
+    _sched.add_job(_safe(forecast.train), "cron", day_of_week="sat", hour=9, minute=30, id="forecast_weekly")  # 每週重新訓練大盤預測  # 每週重新訓練 AI 模型
     _sched.add_job(_safe(catch_up), "interval", minutes=15, id="catch_up", misfire_grace_time=600)
     _sched.start()
     threading.Thread(target=_safe(catch_up), daemon=True).start()
@@ -110,6 +119,7 @@ def start() -> None:
     threading.Thread(target=_safe(sync.backfill), daemon=True).start()
     if not winrate.model():
         threading.Thread(target=_safe(winrate.train), daemon=True).start()
+    threading.Thread(target=_safe(forecast.predict), daemon=True).start()   # 預先算好明日大盤預測
     if ml_model.meta():  # 預先算好今日 AI 模型預測，個股頁不必等
         threading.Thread(target=_safe(ml_model.predict_today), daemon=True).start()
     if db.get_setting("fundamentals_full_pending", False):  # 上次全市場更新被中斷 → 自動接續

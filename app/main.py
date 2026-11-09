@@ -394,6 +394,16 @@ def undo_reset_portfolio():
 
 
 # ---------------- 通知 ----------------
+@app.get("/api/market/forecast")
+def market_forecast_api():
+    from app.services import forecast
+    try:
+        return db.jsonable(forecast.predict())
+    except Exception as e:
+        logging.getLogger(__name__).exception("forecast")
+        raise HTTPException(503, f"明日大盤預測暫時無法計算：{e}")
+
+
 @app.get("/api/intraday-watch")
 def intraday_watch_api():
     w = db.cache_get("intraday_watch") or {"items": []}
@@ -432,6 +442,7 @@ JOBS = {
     "fundamentals": lambda: recommender.refresh_all_fundamentals(),
     "ml_backfill": lambda: chipdata.backfill(),
     "ml_train": lambda: ml_model.train(),
+    "forecast_train": lambda: __import__("app.services.forecast", fromlist=["train"]).train(),
     "history": lambda: history.backfill_history(),
     "history_stop": lambda: history.stop(),
     "retrain_all": lambda: (winrate.train(), ml_model.train()),

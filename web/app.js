@@ -28,7 +28,24 @@ $$("#tabs button").forEach((b) => b.addEventListener("click", () => show(b.datas
 setInterval(() => { $("#clock").textContent = new Date().toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }); }, 1000);
 
 // ---------------- 大盤 ----------------
+async function loadForecast() {
+  const el = $("#forecast");
+  let f;
+  try { f = await api("/api/market/forecast"); } catch (e) { el.innerHTML = `<h3>明日大盤預測</h3><p class="muted">${esc(e.message)}</p>`; return; }
+  const p = Math.round(f.prob_up * 100), cls = f.prob_up >= 0.6 ? "up" : f.prob_up <= 0.4 ? "down" : "";
+  const n = f.night, r = f.range, o = f.model.oos;
+  const src = n ? `已納入${esc(n.source)} ${n.night_ret > 0 ? "+" : ""}${n.night_ret}%（${esc(n.time)}）` : "收盤後預測（夜盤 15:00 開盤後會自動更新，準確率較高）";
+  el.innerHTML = `<h3>明日大盤預測 <span class="muted">依 ${f.date} 收盤 ${fmt(f.close)}｜${src}</span></h3>
+    <div class="grid tiles">
+      <div class="tile"><div class="k">明天收漲機率</div><div class="v ${cls}">${p}%</div><div class="muted">${esc(f.lean)}</div></div>
+      <div class="tile"><div class="k">預估中心</div><div class="v">${fmt(f.center, 0)}</div><div class="muted">${pct((f.center / f.close - 1) * 100)}</div></div>
+      <div class="tile"><div class="k">預估區間（中位數）</div><div class="v">${fmt(r.low, 0)}～${fmt(r.high, 0)}</div><div class="muted">較寬區間 ${fmt(r.low10, 0)}～${fmt(r.high90, 0)}（歷史上約 ${Math.round(r.coverage80 * 100)}% 的日子落在內）</div></div>
+    </div>
+    ${f.reasons.length ? `<p>主要原因：${f.reasons.map((x) => `<span class="chip ${x.effect === "偏多" ? "up" : "down"}">${esc(x.feature)} ${x.value > 0 ? "+" : ""}${x.value}｜${x.effect}</span>`).join("")}</p>` : ""}
+    <p class="muted">${esc(f.note)}。${f.mode === "night" ? "" : "收盤當下沒有夜盤資訊，方向預測和猜漲差不多，請以區間為主參考；"}模型只用收盤（與夜盤）以前就知道的資料，以走勢前進方式在沒看過的期間驗證（${o.from} 起 ${o.n} 天）。僅為統計預測，不是投資建議。</p>`;
+}
 loaders.market = async () => {
+  loadForecast().catch(() => {});
   const m = await api("/api/market").catch((e) => ({ errors: [e.message] }));
   const idx = m.indices || {};
   const tiles = Object.values(idx).map((x) => `<div class="tile"><div class="k">${x.name}　${esc(x.time || "")}</div>
