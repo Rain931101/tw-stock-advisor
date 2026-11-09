@@ -310,6 +310,10 @@ def daily_scan(fetch_fundamentals: bool = True, max_fundamental_fetch: int = 60)
         except Exception as e:
             log.warning("verdict %s failed: %s", sid, e)
     db.cache_set("watchlist", watch[:300])
+    try:
+        build_intraday_watch(uni, groups)
+    except Exception as e:
+        log.warning("intraday watch failed: %s", e)
     expire_old()
     notifier.flush()
     return {"trade_date": trade_date, "universe": len(uni), "candidates": len(candidates), "recommended": saved,
@@ -772,3 +776,66 @@ def attach_trailing(plan: dict, stock_id: str) -> dict:
     )
     plan.setdefault("warnings", []).insert(0, "停利改為移動停利：" + pol.describe())
     return plan
+
+
+# ======================= 盤中進場通知 =======================
+INTRADAY_MAX = 400
+
+
+def build_intraday_watch(uni: list[dict], groups: dict) -> list[dict]:
+    """收盤後建立「盤中觀察名單」：基本面合格、非弱位階／空方格局、勝率模型不是「不推薦」，
+    且某個講義型態只差 ≤ 2 個條件（或已成立）的股票。盤中每分鐘檢查，條件到位就通知。"""
+    from app.services import winrate
+    m = winrate.model()
+    feats = winrate.today_features() if m else {}
+    out = []
+    for st in uni:
+        sid = st["stock_id"]
+        df = groups.get(sid)
+        if df is None or len(df) < 70:
+            continue
+        fund = db.cache_get(f"fundamental:{sid}")
+        if not fund or not fund.get("pass"):
+            continue
+        if m and sid in feats and winrate.assess(feats[sid], m)["decision"] == "avoid":
+            continue
+        res = technical.evaluate(df)
+        ctx = res["context"]
+        if not ctx or ctx["level"] == "弱位階" or ctx["structure"] == "downtrend":
+            continue
+        best = None
+        for s in res["signals"]:
+            miss = len(s.missing)
+            total = len(s.reasons) + miss
+            if s.triggered or (miss <= 2 and total and len(s.reasons) / total >= 0.5):
+                if best is None or miss < len(best.missing):
+                    best = s
+        if best:
+            out.append({"stock_id": sid, "name": st.get("name"), "setup": best.name, "missing": best.missing[:3],
+                        "met": len(best.reasons), "total": len(best.reasons) + len(best.missing)})
+    out.sort(key=lambda x: (len(x["missing"]), -x["met"]))
+    out = out[:INTRADAY_MAX]
+    db.cache_set("intraday_watch", {"date": trade_day(), "built_at": db.now(), "items": out})
+    return out
+
+
+def intraday_entry(stock: dict, res: dict, price: float, day: str) -> int | None:
+    """盤中型態成立 → 用與盤後相同的檢查（基本面、位階格局、風控、勝率模型不推薦）→ 移動停利計畫 → 通知。"""
+    sid = stock["stock_id"]
+    fund = db.cache_get(f"fundamental:{sid}")
+    if not fund or not fund.get("pass"):
+        return None
+    mv = db.cache_get("market_verdict", 24) or {"stance": "中性", "sectors": db.cache_get("sectors") or []}
+    v = stock_verdict(stock, res, fund, db.cache_get(f"chips:{sid}:20"), price, mv["stance"], mv["sectors"])
+    if v["decision"] != "buy" or not v.get("plan"):
+        return None
+    try:
+        wr = winrate_for(sid)
+    except Exception:
+        wr = None
+    if wr and wr.get("trained") and wr["decision"] == "avoid":
+        return None   # 歷史期望報酬 ≤ 0：不推薦（與盤後一致）
+    plan = attach_trailing(v["plan"], sid)
+    plan.setdefault("tags", []).append("盤中")
+    plan["setup_name"] = plan["setup_name"]
+    return save_recommendation(plan, day, intraday=True)

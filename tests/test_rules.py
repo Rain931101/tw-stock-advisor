@@ -416,3 +416,17 @@ def test_winrate_all_csv_endpoint(monkeypatch):
     monkeypatch.setattr(W, "all_stocks", lambda: fake)
     r = TestClient(main.app).get("/api/winrate/all.csv")
     assert r.status_code == 200 and "中光電" in r.text and "推薦" in r.text and "2.43" in r.text
+
+
+def test_synthetic_bar_estimates_full_day_volume():
+    """盤中累計量依經過時間推估全日量（10:00 約只過了 1/4.5），量比不重複推估。"""
+    from datetime import datetime
+    import pandas as pd
+    from app.rules import indicators as ind, technical
+    idx = pd.bdate_range("2026-01-05", periods=3)
+    df = pd.DataFrame({"open": [10, 10, 10], "high": [10, 10, 10], "low": [10, 10, 10], "close": [10, 10, 10],
+                       "volume": [1000, 1000, 1000], "value": [0, 0, 0]}, index=idx, dtype=float)
+    now = datetime(2026, 1, 8, 10, 0)
+    out = technical.synthetic_bar(df, {"price": 10.5, "open": 10, "high": 10.6, "low": 10, "volume": 300}, "2026-01-08", now=now)
+    assert abs(out["volume"].iloc[-1] - ind.estimated_volume(300, now)) < 1e-9
+    assert out["volume"].iloc[-1] > 300 and out["vol_est"].iloc[-1] == 1.0

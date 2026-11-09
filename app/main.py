@@ -3,6 +3,7 @@ import json
 import logging
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -270,7 +271,7 @@ def stock(sid: str, fundamentals: bool = True):
     if len(df) >= 70:
         q = out["quote"]
         intraday = monitor.in_session() and q and q.get("price")
-        src = technical.synthetic_bar(df, q, pd.Timestamp.now().date().isoformat()) if intraday else df
+        src = technical.synthetic_bar(df, q, pd.Timestamp.now().date().isoformat(), now=datetime.now()) if intraday else df
         res = technical.evaluate(src, now=pd.Timestamp.now().to_pydatetime() if intraday else None, intraday=bool(intraday))
         out["technical"] = {"context": res["context"], "signals": [s.to_dict() for s in res["signals"]]}
         out["_res"] = res
@@ -393,6 +394,12 @@ def undo_reset_portfolio():
 
 
 # ---------------- 通知 ----------------
+@app.get("/api/intraday-watch")
+def intraday_watch_api():
+    w = db.cache_get("intraday_watch") or {"items": []}
+    return {**w, "in_session": monitor.in_session(), "interval_sec": get_settings().monitor_interval_sec}
+
+
 @app.get("/api/ml")
 def ml_api():
     m = ml_model.meta()

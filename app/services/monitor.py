@@ -76,7 +76,8 @@ def intraday_tick(now: datetime | None = None, force: bool = False) -> dict:
     day = now.date().isoformat()
     positions = portfolio.open_positions()
     recs = db.query("SELECT * FROM recommendations WHERE status='active'")
-    watch = (db.cache_get("watchlist") or [])[:150]
+    iw = db.cache_get("intraday_watch") or {}
+    watch = [x["stock_id"] for x in iw.get("items", [])] or (db.cache_get("watchlist") or [])[:150]
     ids = {p["stock_id"] for p in positions} | {r["stock_id"] for r in recs} | set(watch)
     markets = {r["stock_id"]: r["market"] for r in db.query("SELECT stock_id, market FROM stocks")}
     quotes = twse.fetch_realtime([(sid, markets.get(sid, "twse")) for sid in ids])
@@ -89,7 +90,7 @@ def intraday_tick(now: datetime | None = None, force: bool = False) -> dict:
         q = quotes.get(pos["stock_id"])
         if not q or q.get("price") is None:
             continue
-        df = technical.synthetic_bar(db.load_prices(pos["stock_id"]), q, day)
+        df = technical.synthetic_bar(db.load_prices(pos["stock_id"]), q, day, now=now)
         hits = portfolio.evaluate_exits(pos, df, now, intraday=True)
         _handle_exit_hits(pos, hits, q["price"], day, True)
         result["exit_alerts"] += len(hits)
@@ -121,26 +122,22 @@ def intraday_tick(now: datetime | None = None, force: bool = False) -> dict:
                            ref_type="recommendation", ref_id=r["id"])
             result["entry_alerts"] += 1
 
-    # 3) 觀察名單：盤中符合進場條件
-    rs = recommender.risk_settings()
+    # 3) 盤中觀察名單：講義的盤中進場訊號（9:05 前不動作、9:30 後回測五日線、12:00 後站回季線…）成立就通知
     stocks = {r["stock_id"]: r for r in db.query("SELECT * FROM stocks")}
-    sectors = db.cache_get("sectors") or []
+    active = {(r["stock_id"]) for r in recs}
     for sid in watch:
         q = quotes.get(sid)
-        if not q or q.get("price") is None:
+        if not q or q.get("price") is None or sid in active:
             continue
-        fund = db.cache_get(f"fundamental:{sid}")
-        if not fund or not fund.get("pass"):
-            continue
-        df = technical.synthetic_bar(db.load_prices(sid), q, day)
+        df = technical.synthetic_bar(db.load_prices(sid), q, day, now=now)   # 盤中量推估全日量
         res = technical.evaluate(df, now=now, intraday=True)
-        for sig in res["signals"]:
-            if not sig.triggered:
-                continue
-            plan = recommender.build_plan(stocks.get(sid, {"stock_id": sid}), sig, res["context"], fund,
-                                          db.cache_get(f"chips:{sid}:20"), sectors, "中性", rs, q["price"])
-            if plan and recommender.save_recommendation(plan, day, intraday=True):
+        if not any(s.triggered for s in res["signals"]):
+            continue
+        try:
+            if recommender.intraday_entry(stocks.get(sid, {"stock_id": sid}), res, q["price"], day):
                 result["entry_alerts"] += 1
+        except Exception as e:
+            log.warning("intraday entry %s: %s", sid, e)
 
     # 4) 大盤急殺提醒
     idx = twse.fetch_realtime([("t00", "index")]).get("t00")

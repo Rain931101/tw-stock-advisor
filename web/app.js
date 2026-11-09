@@ -91,7 +91,7 @@ function recCard(r) {
   const fund = p.fundamental;
   return `<div class="card rec" data-recid="${r.id}">
     <div class="head"><div class="title"><a href="#" data-sid="${r.stock_id}">${r.stock_id} ${esc(r.name)}</a></div><div class="score">分數 ${fmt(r.score, 1)}｜${r.trade_date}</div></div>
-    <div><span class="chip">${esc(p.setup_name)}</span>${(p.tags || []).map((t) => `<span class="chip">${esc(t)}</span>`).join("")}<span class="chip">${esc(p.industry || "")}</span></div>
+    <div><span class="chip">${esc(p.setup_name)}</span>${(p.tags || []).map((t) => `<span class="chip ${t === "盤中" ? "up" : ""}">${t === "盤中" ? "⚡ 盤中訊號" : esc(t)}</span>`).join("")}<span class="chip">${esc(p.industry || "")}</span></div>
     ${planHtml(p)}
     ${marginHtml(p.margin)}
     <details open><summary>為什麼推薦</summary><ul class="list">${p.reasons.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>
@@ -103,7 +103,16 @@ function recCard(r) {
   </div>`;
 }
 let recCache = [];
+async function loadIntradayWatch() {
+  const w = await api("/api/intraday-watch");
+  const items = w.items || [];
+  $("#iw-meta").textContent = `${items.length} 檔${w.date ? `｜依 ${w.date} 收盤建立` : ""}｜${w.in_session ? `盤中監控中（每 ${w.interval_sec} 秒）` : "收盤後，下一個交易日 9:00 開始監控"}`;
+  $("#iw-table").innerHTML = `<tr><th>股票</th><th>最接近的型態</th><th>已符合</th><th>還差</th></tr>` + items.map((x) =>
+    `<tr><td><a href="#" data-sid="${x.stock_id}">${x.stock_id} ${esc(x.name || "")}</a></td><td>${esc(x.setup)}</td><td class="num">${x.met}／${x.total}</td>
+     <td>${x.missing.length ? x.missing.map(esc).join("、") : `<span class="muted">條件都到位，等盤中價格進入可操作範圍</span>`}</td></tr>`).join("");
+}
 loaders.recs = async () => {
+  loadIntradayWatch().catch(() => {});
   recCache = await api(`/api/recommendations?status=${$("#rec-filter").value}`);
   $("#recs").innerHTML = recCache.map(recCard).join("") || `<p class="muted">目前沒有符合兩份講義條件的標的。系統會在收盤後（14:40、21:30）與盤中自動掃描，符合就推播通知。</p>`;
 };

@@ -88,8 +88,8 @@ def build_context(df: pd.DataFrame, now: datetime | None = None, intraday: bool 
 def _vol_ratio(ctx: Context) -> float | None:
     """量比：盤中用估計量，盤後用實際量 / 昨量。"""
     vol, yvol = ctx.row["volume"], ctx.prev["volume"]
-    if ctx.intraday and ctx.now:
-        return ind.volume_ratio(vol, yvol, ctx.now)
+    if ctx.intraday and ctx.now and not ctx.row.get("vol_est"):
+        return ind.volume_ratio(vol, yvol, ctx.now)   # 盤中累計量 → 推估全日量
     return vol / yvol if yvol else None
 
 
@@ -392,19 +392,27 @@ def evaluate(df: pd.DataFrame, now: datetime | None = None, intraday: bool = Fal
     return {"context": context, "signals": sigs}
 
 
-def synthetic_bar(df: pd.DataFrame, quote: dict, day: str) -> pd.DataFrame:
-    """用即時報價組出今日 K 棒，接到歷史資料後面。"""
+def synthetic_bar(df: pd.DataFrame, quote: dict, day: str, now: datetime | None = None) -> pd.DataFrame:
+    """用即時報價組出今日 K 棒，接到歷史資料後面。
+
+    now：盤中時間。給了就把「目前累計成交量」依開盤經過時間推估成全日量（例如 10:00 只過了約 1/4.5），
+    均量、量比、爆量等條件才不會因為盤中量還沒出完而誤判。
+    """
     price = quote.get("price")
     if price is None:
         return df
+    vol = quote.get("volume") or 0
+    if now is not None and vol:
+        vol = ind.estimated_volume(vol, now)
     bar = pd.DataFrame(
         [{
             "open": quote.get("open") or price,
             "high": max(quote.get("high") or price, price),
             "low": min(quote.get("low") or price, price),
             "close": price,
-            "volume": quote.get("volume") or 0,
+            "volume": vol,
             "value": 0,
+            "vol_est": 1.0 if now is not None else 0.0,
         }],
         index=pd.DatetimeIndex([pd.Timestamp(day)]),
     )
