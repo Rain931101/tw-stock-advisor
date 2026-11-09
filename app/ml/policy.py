@@ -123,6 +123,10 @@ def search() -> dict:
         passed = [t for t in table if t["pass"]]
         key = lambda t: (min(t["select"]["rate"], t["verify"]["rate"]), min(t["select"]["exp"], t["verify"]["exp"]))
         best = max(passed, key=key) if passed else None
+        if best is None and table:
+            # 沒有任何設定兩期都達門檻：仍採用「大賠比例最低的一半」中勝率最高者當統一出場規則，並標示未達門檻
+            safe = sorted(table, key=lambda t: max(t["select"]["big_loss_rate"], t["verify"]["big_loss_rate"]))[: max(1, len(table) // 2)]
+            best = {**max(safe, key=key), "below_gate": True}
         table.sort(key=lambda t: (not t["pass"], -min(t["select"]["rate"], t["verify"]["rate"])))
         out = {"trained_at": db.now(), "split": str(pd.Timestamp(split).date()),
                "period": {"from": str(pd.Timestamp(all_dates[0]).date()), "to": str(pd.Timestamp(all_dates[-1]).date())},
