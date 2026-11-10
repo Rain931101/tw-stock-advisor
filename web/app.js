@@ -287,8 +287,8 @@ loaders.portfolio = async () => {
   $("#pf-summary").innerHTML = [
     ["持股市值", fmt(s.market_value, 0)], ["自有資金使用率", s.exposure_pct == null ? "—" : s.exposure_pct + "%"],
     ["未實現損益", signed(s.unrealized_pnl)], ["全部打到停損的虧損", fmt(s.risk_at_stop, 0)],
-    ["融資借款", fmt(s.margin_loan, 0)], ["已實現損益", signed(s.realized_pnl)], ["勝率", s.win_rate == null ? "—" : `${s.win_rate}%（${s.closed_trades} 筆）`],
-  ].map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+    ["融資借款", fmt(s.margin_loan, 0)], ["已實現損益", signed(s.realized_pnl), s.realized_partial ? `含未出清持股的部分賣出 ${signed(s.realized_partial)}` : ""], ["勝率", s.win_rate == null ? "—" : `${s.win_rate}%（${s.closed_trades} 筆）`],
+  ].map(([k, v, sub]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="muted">${sub}</div>` : ""}</div>`).join("");
   $("#pf-notes").innerHTML = h.notes.length ? `<div class="card"><h3>投資組合提醒</h3><ul class="list">${h.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>` : "";
   $("#positions").innerHTML = h.positions.map((p) => `<div class="card status-${p.status}">
      <div class="rec head"><div class="title"><a href="#" data-sid="${p.stock_id}">${p.stock_id} ${esc(p.name)}</a> <span class="chip">${STATUS[p.status]}</span></div>

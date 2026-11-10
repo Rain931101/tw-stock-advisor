@@ -387,12 +387,15 @@ def health_check() -> dict:
             port_notes.append(f"持股集中在「{top_ind}」（{top_val/total_value:.0%}）：族群轉弱時會一起修正")
     if capital and total_risk / capital > 0.06:
         port_notes.append(f"全部持股同時打到停損的總虧損約 {total_risk:,.0f} 元（{total_risk/capital:.1%} 資金），偏高")
+    # 已實現損益：所有賣出（含尚未出清持股的部分賣出）；勝率只算已出清的交易
     closed = db.query("SELECT realized_pnl FROM positions WHERE status='closed'")
     wins = [c["realized_pnl"] for c in closed if c["realized_pnl"] > 0]
+    partial = db.one("SELECT COALESCE(SUM(realized_pnl), 0) AS s FROM positions WHERE status='open'")["s"]
     stats = {
         "closed_trades": len(closed),
         "win_rate": round(len(wins) / len(closed) * 100, 1) if closed else None,
-        "realized_pnl": round(sum(c["realized_pnl"] for c in closed)),
+        "realized_pnl": round(sum(c["realized_pnl"] for c in closed) + partial),
+        "realized_partial": round(partial),
     }
     return {
         "positions": items,

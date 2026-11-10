@@ -221,6 +221,22 @@ def test_margin_position_interest_and_maintenance():
         portfolio.confirm_buy(None, "9998", price=100.0, shares=500, mode="margin")  # 融資不能零股
 
 
+def test_realized_pnl_includes_partial_sells():
+    from app.services import portfolio
+
+    db.reset_for_tests()
+    db.execute("INSERT INTO stocks VALUES ('9997','測試部分賣出','twse','半導體業')")
+    db.upsert_prices([("9997", d.date().isoformat(), 100.0, 100.0, 100.0, 100.0, 2000, 0)
+                      for d in pd.bdate_range("2026-01-01", periods=80)])
+    pos = portfolio.confirm_buy(None, "9997", price=100.0, shares=1000, buy_date="2026-01-01")
+    pid = pos.get("id") or pos.get("position_id") or db.one("SELECT id FROM positions")["id"]
+    r = portfolio.record_sell(pid, price=110.0, shares=400)
+    assert r["remaining"] == 600 and r["pnl"] > 0
+    s = portfolio.health_check()["summary"]
+    assert s["realized_pnl"] == r["pnl"] and s["realized_partial"] == r["pnl"]
+    assert s["closed_trades"] == 0 and s["win_rate"] is None  # 勝率只算已出清的交易
+
+
 def test_max_loss_above_position_size_does_not_block_everything():
     s = risk.size_position(entry=163.5, stop=154, per_trade_capital=5_000, max_loss=10_000)
     assert s.ok and s.max_entry > 154 and s.shares > 0
