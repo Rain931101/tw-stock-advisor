@@ -20,8 +20,21 @@ _lock = threading.Lock()
 _stop = threading.Event()
 
 
-def coverage() -> dict:
-    """目前各資料的起訖日期與天數。"""
+def coverage(max_age_min: float = 10) -> dict:
+    """目前各資料的起訖日期與天數。
+
+    全表統計在數百萬筆資料上要好幾秒，而且會佔住資料庫鎖、卡住其他頁面，所以快取 10 分鐘；回補中則每次重算。
+    """
+    if not status["running"]:
+        hit = db.cache_get("history_coverage", max_age_hours=max_age_min / 60)
+        if hit:
+            return hit
+    out = _coverage()
+    db.cache_set("history_coverage", out)
+    return out
+
+
+def _coverage() -> dict:
     def rng(sql):
         r = db.one(sql)
         return {"from": r["a"], "to": r["b"], "days": r["n"]}

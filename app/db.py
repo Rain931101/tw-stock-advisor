@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
+_memory = False                  # 測試用記憶體資料庫：只有一條連線，讀取也走主連線
+_local = threading.local()       # 每個執行緒自己的唯讀連線
 
 
 def conn() -> sqlite3.Connection:
@@ -73,7 +75,8 @@ def _migrate(c: sqlite3.Connection) -> None:
 
 
 def reset_for_tests(path: str = ":memory:") -> None:
-    global _conn
+    global _conn, _memory
+    _memory = True
     _conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
     _conn.row_factory = sqlite3.Row
     _conn.executescript(SCHEMA)
@@ -85,17 +88,44 @@ def tx():
     with _lock:
         c = conn()
         c.execute("BEGIN")
+        _local.in_tx = getattr(_local, "in_tx", 0) + 1
         try:
             yield c
             c.execute("COMMIT")
         except Exception:
             c.execute("ROLLBACK")
             raise
+        finally:
+            _local.in_tx -= 1
+
+
+@contextmanager
+def reading():
+    """讀取用連線。
+
+    WAL 模式允許多個讀者同時讀，所以大量讀取（全市場日 K、模型特徵）用每個執行緒自己的唯讀連線，
+    不佔用主連線的鎖，背景掃描讀資料時其他頁面（持股、通知）不會被卡住。
+    記憶體資料庫（測試）或交易進行中（要讀到自己還沒提交的寫入）仍走主連線。
+    """
+    conn()
+    if _memory or getattr(_local, "in_tx", 0):
+        with _lock:
+            yield _conn
+        return
+    r = getattr(_local, "reader", None)
+    if r is None:
+        r = sqlite3.connect(f"file:{get_settings().db_path}?mode=ro", uri=True, check_same_thread=False)
+        r.row_factory = sqlite3.Row
+        _local.reader = r
+    yield r
 
 
 def query(sql: str, params=()) -> list[dict]:
-    with _lock:
-        return [dict(r) for r in conn().execute(sql, params).fetchall()]
+    if not sql.lstrip()[:6].upper() == "SELECT":
+        with _lock:
+            return [dict(r) for r in conn().execute(sql, params).fetchall()]
+    with reading() as c:
+        return [dict(r) for r in c.execute(sql, params).fetchall()]
 
 
 def one(sql: str, params=()) -> dict | None:
@@ -159,10 +189,10 @@ def upsert_prices(rows: list[tuple]) -> None:
 
 
 def load_prices(stock_id: str, limit: int = 400) -> pd.DataFrame:
-    with _lock:
+    with reading() as c:
         df = pd.read_sql_query(
             "SELECT date, open, high, low, close, volume, value FROM prices WHERE stock_id=? ORDER BY date DESC LIMIT ?",
-            conn(),
+            c,
             params=(stock_id, limit),
         )
     df = df.iloc[::-1].reset_index(drop=True)
@@ -171,10 +201,10 @@ def load_prices(stock_id: str, limit: int = 400) -> pd.DataFrame:
 
 
 def load_all_prices(since: str) -> pd.DataFrame:
-    with _lock:
+    with reading() as c:
         return pd.read_sql_query(
             "SELECT stock_id, date, open, high, low, close, volume, value FROM prices WHERE date>=? ORDER BY stock_id, date",
-            conn(),
+            c,
             params=(since,),
         )
 

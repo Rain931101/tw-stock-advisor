@@ -282,7 +282,14 @@ $("#undo-portfolio").addEventListener("click", async () => {
 // ---------------- 持股健檢 ----------------
 const STATUS = { ok: "健康", warn: "注意", danger: "危險" };
 loaders.portfolio = async () => {
-  const h = await api("/api/portfolio/health");
+  const loading = `<p class="muted">載入中…</p>`;
+  if (!$("#positions").innerHTML.trim()) $("#positions").innerHTML = loading;
+  if (!$("#trades").innerHTML.trim()) $("#trades").innerHTML = loading;
+  let h;
+  try { h = await api("/api/portfolio/health"); } catch (e) {
+    $("#positions").innerHTML = `<p class="warn">持股資料暫時讀不到（${esc(e.message)}），資料沒有遺失，請稍後重新整理。</p>`;
+    return;
+  }
   const s = h.summary;
   $("#pf-summary").innerHTML = [
     ["持股市值", fmt(s.market_value, 0)], ["自有資金使用率", s.exposure_pct == null ? "—" : s.exposure_pct + "%"],
@@ -312,7 +319,8 @@ loaders.portfolio = async () => {
      ${(p.stop_history || []).length > 1 ? `<details><summary>停損移動紀錄</summary><ul class="list">${p.stop_history.map((h) => `<li>${h.date}：${fmt(h.stop)}（${esc(h.reason)}）</li>`).join("")}</ul></details>` : ""}
      <div class="btns"><button class="small" data-sell="${p.id}" data-sh="${p.shares}" data-px="${p.last}">記錄賣出／減碼</button><button class="small ghost" data-cost="${p.id}" data-cur="${p.cost}" data-rz="${p.realized_pnl || 0}" data-sold="${p.shares_sold || 0}">對帳：修改成本</button></div>
    </div>`).join("") || `<p class="muted">尚無持股。到「推薦」按「我已買進」，或用上方按鈕新增。</p>`;
-  const t = await api("/api/trades");
+  let t;
+  try { t = await api("/api/trades"); } catch (e) { $("#trades").innerHTML = `<p class="warn">交易紀錄暫時讀不到（${esc(e.message)}），資料沒有遺失，請稍後重新整理。</p>`; return; }
   $("#trades").innerHTML = `<table><tr><th>時間</th><th>股票</th><th>買賣</th><th class="num">價格</th><th class="num">股數</th><th>原因</th></tr>
     ${t.map((x) => `<tr><td>${x.ts.replace("T", " ")}</td><td>${x.stock_id} ${esc(x.name)}</td><td class="${x.side === "buy" ? "up" : "down"}">${x.side === "buy" ? "買進" : "賣出"}</td><td class="num">${fmt(x.price)}</td><td class="num">${fmt(x.shares, 0)}</td><td>${esc(x.reason)}</td></tr>`).join("")}</table>`;
 };

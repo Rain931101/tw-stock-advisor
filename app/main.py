@@ -439,11 +439,11 @@ def intraday_watch_api():
 @app.get("/api/ml")
 def ml_api():
     m = ml_model.meta()
+    cv = history.coverage()
     return db.jsonable({"model": m, "status": ml_model.status, "data_status": chipdata.status,
                         "history": {**history.status, "other_running": history.other_running(),
-                                    "progress": db.get_setting("history_progress")}, "coverage": history.coverage(),
-                        "data": {k: db.one(f"SELECT COUNT(DISTINCT date) AS d FROM {k}")["d"] for k in ("chips_daily", "margin_daily")}
-                        if db.one("SELECT name FROM sqlite_master WHERE name='chips_daily'") else {}})
+                                    "progress": db.get_setting("history_progress")}, "coverage": cv,
+                        "data": {"chips_daily": cv["insti"]["days"], "margin_daily": cv["margin"]["days"]}})
 
 
 @app.get("/api/alerts")
