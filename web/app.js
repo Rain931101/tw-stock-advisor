@@ -310,7 +310,7 @@ loaders.portfolio = async () => {
      ${(p.entry_warnings || []).map((w) => `<p class="warn">⚠️ ${esc(w)}</p>`).join("")}
      <details><summary>出場規則</summary>${exitRulesHtml(p.exit_rules)}</details>
      ${(p.stop_history || []).length > 1 ? `<details><summary>停損移動紀錄</summary><ul class="list">${p.stop_history.map((h) => `<li>${h.date}：${fmt(h.stop)}（${esc(h.reason)}）</li>`).join("")}</ul></details>` : ""}
-     <div class="btns"><button class="small" data-sell="${p.id}" data-sh="${p.shares}" data-px="${p.last}">記錄賣出／減碼</button><button class="small ghost" data-cost="${p.id}" data-cur="${p.cost}">對帳：修改成本</button></div>
+     <div class="btns"><button class="small" data-sell="${p.id}" data-sh="${p.shares}" data-px="${p.last}">記錄賣出／減碼</button><button class="small ghost" data-cost="${p.id}" data-cur="${p.cost}" data-rz="${p.realized_pnl || 0}" data-sold="${p.shares_sold || 0}">對帳：修改成本</button></div>
    </div>`).join("") || `<p class="muted">尚無持股。到「推薦」按「我已買進」，或用上方按鈕新增。</p>`;
   const t = await api("/api/trades");
   $("#trades").innerHTML = `<table><tr><th>時間</th><th>股票</th><th>買賣</th><th class="num">價格</th><th class="num">股數</th><th>原因</th></tr>
@@ -318,9 +318,10 @@ loaders.portfolio = async () => {
 };
 document.addEventListener("click", (e) => {
   const c = e.target.closest("[data-cost]");
-  if (c) dialog(`<h3>對帳：修改成本</h3><label>券商帳上的總成本（含買進手續費）<input name="cost" type="number" step="any" required value="${c.dataset.cur}"></label>
-      <p class="muted">以元大為例：庫存明細的「成本」或「付出成本」。系統會依此重算未實現損益與損益平衡點。</p>`,
-    async (v) => { await api(`/api/positions/${c.dataset.cost}/cost`, { method: "POST", body: { cost: +v.cost } }); toast("已更新成本"); loaders.portfolio(); });
+  if (c) dialog(`<h3>對帳：以券商帳上為準</h3><label>目前庫存的總成本（含買進手續費）<input name="cost" type="number" step="any" required value="${c.dataset.cur}"></label>
+      <label>這檔的已實現損益（選填）<input name="realized" type="number" step="1" value="${+c.dataset.sold ? c.dataset.rz : ""}" placeholder="有部分賣出時填，例如元大的已實現損益"></label>
+      <p class="muted">以元大為例：庫存明細的「成本」（不是均價）與「已實現損益」。分批買進時券商依每一筆成交計算成本、先買先賣，和系統用的平均成本不同，以券商數字為準；系統會依此重算未實現損益、成本均價與損益平衡點。</p>`,
+    async (v) => { await api(`/api/positions/${c.dataset.cost}/cost`, { method: "POST", body: { cost: +v.cost, realized_pnl: v.realized === "" ? null : +v.realized } }); toast("已依券商帳上更新"); loaders.portfolio(); });
   const s = e.target.closest("[data-sell]");
   if (s) dialog(`<h3>記錄賣出</h3><label>成交價<input name="price" type="number" step="0.01" required value="${s.dataset.px}"></label>
       <label>股數<input name="shares" type="number" required value="${s.dataset.sh}"></label>

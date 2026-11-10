@@ -339,11 +339,15 @@ def sell(pid: int, body: SellIn):
 
 class CostIn(BaseModel):
     cost: float
+    realized_pnl: float | None = None
 
 
 @app.post("/api/positions/{pid}/cost")
 def set_cost(pid: int, body: CostIn):
-    """對帳：填入券商帳上的總成本（含買進手續費）。"""
+    """對帳：填入券商帳上目前庫存的總成本（含買進手續費），以及（選填）這檔已實現損益。
+
+    分批買進時券商依各筆成交計算（先買先賣），和系統的平均成本不同，以券商數字為準。
+    """
     p = db.one("SELECT * FROM positions WHERE id=?", (pid,))
     if not p:
         raise HTTPException(404, "持股不存在")
@@ -351,6 +355,8 @@ def set_cost(pid: int, body: CostIn):
         raise HTTPException(400, "成本必須大於 0")
     # 使用者填的是目前剩餘股數的成本，換算回原始股數存放
     portfolio.set_cost(pid, body.cost * p["shares"] / p["remaining"])
+    if body.realized_pnl is not None:
+        db.execute("UPDATE positions SET realized_pnl=? WHERE id=?", (round(body.realized_pnl), pid))
     return {"ok": True}
 
 

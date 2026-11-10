@@ -237,6 +237,28 @@ def test_realized_pnl_includes_partial_sells():
     assert s["closed_trades"] == 0 and s["win_rate"] is None  # 勝率只算已出清的交易
 
 
+def test_reconcile_with_broker_cost_and_realized(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import main
+    from app.services import portfolio
+
+    db.reset_for_tests()
+    monkeypatch.setattr(main.scheduler, "start", lambda: None)
+    db.execute("INSERT INTO stocks VALUES ('0050','元大台灣50','twse','ETF')")
+    db.upsert_prices([("0050", d.date().isoformat(), 99.7, 99.7, 99.7, 99.7, 2000, 0)
+                      for d in pd.bdate_range("2026-01-01", periods=80)])
+    pid = portfolio.confirm_buy(None, "0050", price=92.21, shares=350, buy_date="2026-01-01", cost=32274)["id"]
+    portfolio.record_sell(pid, price=97.85, shares=150)
+    client = TestClient(main.app)
+    # 元大：分批買進，剩 200 股成本 18,561、已實現 946
+    assert client.post(f"/api/positions/{pid}/cost", json={"cost": 18561, "realized_pnl": 946}).status_code == 200
+    h = portfolio.health_check()
+    pos = h["positions"][0]
+    assert pos["cost"] == 18561 and pos["pnl"] == 1332 and pos["break_even"] == 93.05
+    assert h["summary"]["realized_pnl"] == 946
+
+
 def test_max_loss_above_position_size_does_not_block_everything():
     s = risk.size_position(entry=163.5, stop=154, per_trade_capital=5_000, max_loss=10_000)
     assert s.ok and s.max_entry > 154 and s.shares > 0

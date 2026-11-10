@@ -370,7 +370,7 @@ def health_check() -> dict:
             "fundamental_grade": "ETF 不適用" if is_etf else (fund.get("grade") if fund else None),
             "context": {k: ctx.get(k) for k in ("regime", "level", "structure", "angle", "volume_ratio")},
             "exit_rules": plan.get("exit_rules", []), "targets": targets,
-            "realized_pnl": p["realized_pnl"],
+            "realized_pnl": p["realized_pnl"], "shares_sold": p["shares"] - p["remaining"],
         })
     capital = rs["capital"]
     port_notes = []
