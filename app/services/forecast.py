@@ -368,7 +368,7 @@ def predict(force: bool = False) -> dict | None:
     lean = "偏多" if prob >= 0.6 else "偏空" if prob <= 0.4 else "中性（接近五五波）"
     out = {
         "date": str(day.date()), "mode": mode, "close": close, "atr": round(atr, 1), "prob_up": round(prob, 4), "lean": lean,
-        "center": round(center), "night": night,
+        "center": round(center), "night": ({k: round(v, 2) if isinstance(v, float) else v for k, v in night.items()} if night else None),
         "us": ({**{US_NEXT[k]: round(v, 2) for k, v in us.items() if k in US_NEXT}, "date": us["us_date"]} if us else None),
         "range": {"high": round(center + b["hi50"] * atr), "low": round(center + b["lo50"] * atr),
                   "high90": round(center + b["hi90"] * atr), "low10": round(center + b["lo10"] * atr),
