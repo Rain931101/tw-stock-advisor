@@ -404,6 +404,18 @@ def market_forecast_api():
         raise HTTPException(503, f"明日大盤預測暫時無法計算：{e}")
 
 
+@app.get("/api/market/oversold")
+def oversold_api():
+    from app.services import oversold
+    last = db.one("SELECT MAX(date) AS d FROM prices")["d"]
+    key = f"oversold_today:{last}"
+    t = db.cache_get(key, max_age_hours=1)
+    if not t:
+        t = oversold.today()
+        db.cache_set(key, t)
+    return db.jsonable({"today": t, "stats": oversold.stats()})
+
+
 @app.get("/api/market/gapfade")
 def gapfade_api():
     from app.services import gapfade
@@ -455,6 +467,7 @@ JOBS = {
     "history_stop": lambda: history.stop(),
     "retrain_all": lambda: (winrate.train(), ml_model.train()),
     "close_review": lambda: monitor.close_review(),
+    "oversold": lambda: __import__("app.services.oversold", fromlist=["check_and_alert"]).check_and_alert(),
     "backup": lambda: db.backup(),
     "train": lambda: winrate.train(),
 }

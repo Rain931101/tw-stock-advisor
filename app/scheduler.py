@@ -31,13 +31,24 @@ def after_close():
     recommender.remind_unconfirmed(date.today().isoformat())
     n = sync.daily_update()
     monitor.close_review()
-    return {"synced": n, "scan": recommender.daily_scan(fetch_fundamentals=False)}
+    return {"synced": n, "oversold": _oversold(), "scan": recommender.daily_scan(fetch_fundamentals=False)}
+
+
+def _oversold():
+    """全面超跌搶反彈提示（收盤資料更新後檢查）。"""
+    try:
+        from app.services import oversold
+        return oversold.check_and_alert()
+    except Exception:
+        log.exception("oversold check failed")
+        return None
 
 
 def evening_scan():
     if not monitor.trading_day():
         return "not trading day"
     sync.daily_update()
+    _oversold()
     db.cache_set(f"evening_done:{date.today().isoformat()}", True)
     try:  # 三大法人、融資券（機器學習特徵）
         from app.data import chipdata

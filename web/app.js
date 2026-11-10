@@ -78,8 +78,42 @@ async function loadGapfade(f) {
   }
   $("#gapfade").innerHTML = html;
 }
+async function loadOversold() {
+  const el = $("#oversold");
+  let g;
+  try { g = await api("/api/market/oversold"); } catch (e) { el.innerHTML = `<h3>全面超跌搶反彈</h3><p class="muted">${esc(e.message)}</p>`; return; }
+  const t = g.today, s = g.stats, th = t.threshold;
+  const P = (x) => (x == null ? "—" : Math.round(x * 100) + "%");
+  const sg = (x) => (x == null ? "—" : `${x > 0 ? "+" : ""}${x}%`);
+  const STAGE = { entry: ["恐慌緩解：可分批進場", "up"], watch: ["全面超跌：先觀察", "down"], none: ["沒有全面超跌", ""] };
+  const [label, cls] = STAGE[t.stage] || STAGE.none;
+  const e = s.entry, a = s.all, f = s.first, l = s.lone;
+  let html = `<h3>全面超跌搶反彈 <span class="chip ${cls}">${label}</span> <span class="muted">${t.date} 收盤</span></h3>
+    <p>今天 <b>${P(t.share)}</b> 的股票（${t.n_oversold}／${t.n_stocks} 檔）收盤低於月線 ${-th.bias}% 以上，前一天 ${P(t.prev_share)}；超過 ${P(th.share)} 算全面超跌。</p>
+    <p>${t.recent.map((x) => `<span class="chip ${x.stage === "entry" ? "up" : x.stage === "watch" ? "down" : ""}" title="${x.stage === "entry" ? "恐慌緩解" : x.stage === "watch" ? "全面超跌、還在增加" : "未達門檻"}">${x.date.slice(5)} ${P(x.share)}</span>`).join("")}</p>`;
+  if (t.stage === "entry") html += `<p class="warn"><b>恐慌開始緩解</b>：超跌比例比前一天少。歷史上這種日子隔日開盤買超跌股、抱 ${th.hold} 個交易日：平均 <b>${sg(e.avg)}</b>、勝率 ${P(e.win)}，但仍有 ${P(e.big_loss)} 的交易虧超過 10%。
+      部位縮小、分批買（比例隔天又上升代表還在殺，先停）；持有 ${th.hold} 個交易日出場，不要套用平常的緊停損，否則很容易在反彈前被洗掉。</p>`;
+  else if (t.stage === "watch") html += `<p class="warn"><b>還在殺，先不要接刀</b>：全面超跌第一天進場，歷史平均 ${sg(f.avg)}、${P(f.big_loss)} 的交易虧超過 10%。等超跌比例比前一天低（恐慌緩解）會再通知。</p>`;
+  else html += `<p class="muted">個股自己急跌（大盤沒有一起崩）時搶反彈沒有優勢：平均 ${sg(l.avg)}、${P(l.big_loss)} 的交易虧超過 10%，所以不提示。</p>`;
+  if (t.stage !== "none" && t.candidates.length) {
+    html += `<h4>超跌最深的股票（基本面 A／B ${t.n_good} 檔排前面）</h4><div class="scroll"><table>
+      <tr><th>代號</th><th>名稱</th><th>產業</th><th class="num">收盤</th><th class="num">月線乖離</th><th class="num">5 日漲跌</th><th>基本面</th></tr>
+      ${t.candidates.map((x) => `<tr><td><a href="#" data-sid="${x.stock_id}">${x.stock_id}</a></td><td>${esc(x.name)}</td><td>${esc(x.industry)}</td><td class="num">${fmt(x.close)}</td>
+        <td class="num down">${x.bias20}%</td><td class="num">${pct(x.chg5)}</td><td>${x.grade ? `${x.grade}（${x.score}）` : '<span class="muted">未評</span>'}</td></tr>`).join("")}</table></div>`;
+  }
+  html += `<details><summary>回測依據（${s.period[0]}～${s.period[1]}，隔日開盤買、抱 ${th.hold} 個交易日收盤賣、已扣手續費與證交稅）</summary>
+    <div class="scroll"><table><tr><th>進場時機</th><th class="num">天數</th><th class="num">筆數</th><th class="num">平均報酬</th><th class="num">勝率</th><th class="num">虧超過 10%</th></tr>
+      ${[["恐慌緩解日（提示進場）", e], ["所有全面超跌日", a], ["全面超跌第一天", f], ["個股獨自急跌（對照）", l]].map(([k, x]) =>
+        `<tr><td>${k}</td><td class="num">${x.days}</td><td class="num">${fmt(x.n, 0)}</td><td class="num ${x.avg > 0 ? "up" : "down"}">${sg(x.avg)}</td><td class="num">${P(x.win)}</td><td class="num">${P(x.big_loss)}</td></tr>`).join("")}</table></div>
+    <p>恐慌緩解日各年平均：${s.years.map((y) => `${y.year} ${sg(y.avg)}`).join("、")}</p>
+    <div class="scroll"><table><tr><th>每次崩跌</th><th class="num">天數</th><th class="num">最高超跌比例</th><th class="num">第一天進場</th><th class="num">恐慌緩解日進場</th></tr>
+      ${s.episodes.map((x) => `<tr><td>${x.start}～${x.end.slice(5)}</td><td class="num">${x.days}</td><td class="num">${P(x.peak_share)}</td><td class="num">${sg(x.first_avg)}</td><td class="num">${x.entry_days ? `${sg(x.entry_avg)}（${x.entry_days} 天）` : "—"}</td></tr>`).join("")}</table></div>
+    <p class="muted">樣本只有十幾次崩跌，而且回測股票是「現在仍在交易、流動性足夠」的股票，當年跌下去沒再起來的不在裡面，實際結果會比回測差。僅為統計參考，不是投資建議。</p></details>`;
+  el.innerHTML = html;
+}
 loaders.market = async () => {
   loadForecast().then(() => loadGapfade(window.__fc)).catch(() => {});
+  loadOversold().catch(() => {});
   const m = await api("/api/market").catch((e) => ({ errors: [e.message] }));
   const idx = m.indices || {};
   const tiles = Object.values(idx).map((x) => `<div class="tile"><div class="k">${x.name}　${esc(x.time || "")}</div>
