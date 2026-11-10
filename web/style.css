@@ -102,6 +102,8 @@ button.danger-text { color: var(--danger); }
 .ratebar-legend span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .ratebar-legend span:first-child { left: 0; transform: none; }
 .ratebar-legend span:last-child { right: 0; transform: none; }
+.ratebar-legend span.to-left { transform: translateX(calc(-100% - 4px)); }
+.ratebar-legend span.to-right { transform: translateX(4px); }
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: var(--ink); }
 td.wrap { white-space: normal; min-width: 220px; font-size: 13px; }

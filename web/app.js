@@ -348,7 +348,7 @@ function expBar(exp, p) {
   const col = exp >= p.buy_exp ? "var(--up)" : exp <= p.avoid_exp ? "var(--muted)" : "var(--warn)";
   return `<div class="ratebar"><span class="fill" style="width:${pos(exp)}%;background:${col}"></span>
     <span class="mark" style="left:${pos(p.avoid_exp)}%"></span><span class="mark" style="left:${pos(p.buy_exp)}%"></span></div>
-    <div class="ratebar-legend"><span>${lo}%</span><span style="left:${pos(p.avoid_exp)}%">不推 ≤ ${p.avoid_exp}%</span><span style="left:${pos(p.buy_exp)}%">推薦 ≥ +${p.buy_exp}%</span><span>+${hi}%</span></div>`;
+    <div class="ratebar-legend"><span>${lo}%</span><span class="to-left" style="left:${pos(p.avoid_exp)}%">不推 ≤ ${p.avoid_exp}%</span><span class="to-right" style="left:${pos(p.buy_exp)}%">推薦 ≥ +${p.buy_exp}%</span><span>+${hi}%</span></div>`;
 }
 function winrateHtml(w) {
   if (!w) return `<p class="muted">勝率模型尚未訓練（到「勝率」頁按重新訓練）。</p>`;
