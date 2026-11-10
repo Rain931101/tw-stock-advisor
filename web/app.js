@@ -45,6 +45,8 @@ async function loadForecast() {
       <div class="tile"><div class="k">預估收盤（中心）</div><div class="v">${fmt(f.center, 0)}</div><div class="muted">${pct((f.center / f.close - 1) * 100)}</div></div>
       <div class="tile"><div class="k">預估區間（中位數）</div><div class="v">${fmt(r.low, 0)}～${fmt(r.high, 0)}</div><div class="muted">較寬區間 ${fmt(r.low10, 0)}～${fmt(r.high90, 0)}（歷史上約 ${Math.round(r.coverage80 * 100)}% 的日子落在內）</div></div>
     </div>
+    ${f.vol && f.vol.ratio >= 1.3 ? `<p class="warn">⚠️ 近 14 天平均每日波動 ${f.vol.atr_pct}%，是近 60 天平常水準（${f.vol.atr60_pct}%）的 ${f.vol.ratio} 倍，所以區間比平常寬（較寬區間上下約 ${f.vol.wide_pct}%）。
+      回測顯示這種高波動期，即使用目前的寬度，實際最高／最低也只有約 2／3 的日子落在區間內；縮小區間只會更常落空，所以沒有縮小。</p>` : ""}
     ${us ? `<p>美股：${Object.entries(us).filter(([k]) => k !== "date").map(([k, v]) => `<span class="chip ${v > 0 ? "up" : v < 0 ? "down" : ""}">${esc(k)} ${v > 0 ? "+" : ""}${v}%</span>`).join("")}</p>` : ""}
     ${f.reasons.length ? `<p>主要原因：${f.reasons.map((x) => `<span class="chip ${x.effect === "偏多" ? "up" : "down"}">${esc(x.feature)} ${x.value > 0 ? "+" : ""}${x.value}｜${x.effect}</span>`).join("")}</p>` : ""}
     <div id="gapfade"></div>

@@ -66,6 +66,7 @@ def _market_frame() -> pd.DataFrame:
     tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
     atr = tr.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
     f["atr_pct"] = atr / c * 100
+    f["atr60_pct"] = tr.ewm(alpha=1 / 60, adjust=False, min_periods=60).mean() / c * 100   # 只用來說明「近期波動是平常的幾倍」
     sign = np.sign(c.diff().fillna(0))
     f["streak"] = sign * sign.groupby((sign != sign.shift()).cumsum()).cumcount().add(1)
     f["body"] = ((c - l) / (h - l).replace(0, np.nan))
@@ -310,7 +311,8 @@ def _night_now(last_close_day: pd.Timestamp) -> dict | None:
     nxt = nf[nf.index > last_close_day]
     if len(nxt):
         r = nxt.iloc[0]
-        return {"night_ret": float(r["night_ret"]), "night_hi": float(r["night_hi"]), "night_lo": float(r["night_lo"]),
+        return {"night_ret": round(float(r["night_ret"]), 2), "night_hi": round(float(r["night_hi"]), 2),
+                "night_lo": round(float(r["night_lo"]), 2),
                 "source": "夜盤收盤（期交所）", "time": "05:00"}
     now = datetime.now()
     if not (now.hour >= 15 or now.hour < 9) or now.date() < last_close_day.date():
@@ -374,6 +376,10 @@ def predict(force: bool = False) -> dict | None:
         "reasons": reasons, "model": {"trained_at": meta["trained_at"], "samples": m["samples"], "period": m["period"], "oos": o},
         "confident": prob >= 0.6 or prob <= 0.4, "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
+    a60 = float(last["atr60_pct"].iloc[0]) if "atr60_pct" in last and pd.notna(last["atr60_pct"].iloc[0]) else None
+    out["vol"] = {"atr_pct": round(atr / close * 100, 2), "atr60_pct": round(a60, 2) if a60 else None,
+                  "ratio": round(atr / close * 100 / a60, 2) if a60 else None,
+                  "wide_pct": round((out["range"]["high90"] - out["range"]["low10"]) / close * 100, 2)}
     if cols:
         op = _apply(b["w_open"], cols, vals)
         out["open"] = {"pct": round(op, 2), "price": round(close * (1 + op / 100)), "mae": b["open_mae"],
