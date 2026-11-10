@@ -449,6 +449,7 @@ JOBS = {
     "fundamentals": lambda: recommender.refresh_all_fundamentals(),
     "ml_backfill": lambda: chipdata.backfill(),
     "ml_train": lambda: ml_model.train(),
+    "us_backfill": lambda: __import__("app.data.usmarket", fromlist=["backfill"]).backfill(),
     "forecast_train": lambda: __import__("app.services.forecast", fromlist=["train"]).train(),
     "history": lambda: history.backfill_history(),
     "history_stop": lambda: history.stop(),

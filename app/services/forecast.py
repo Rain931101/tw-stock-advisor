@@ -8,7 +8,11 @@
 模型：LightGBM（淺層、強正則化）＋ 走勢前進式驗證（每段只用更早的資料訓練），
 回報樣本外準確率並與「每天都猜漲」的基準比較。區間預測以 ATR 為單位的歷史分位數。
 
-注意：台股隔天開盤很受美股夜盤影響，這裡收盤後就預測，沒有用到美股資料。
+三個模型依「現在知道多少」自動切換：
+  close：台股收盤後（只用台股資料）
+  night：台指期夜盤 15:00 開盤後（加夜盤漲跌）
+  us   ：美股收盤後（台灣清晨 4～5 點；再加 S&P 500、那斯達克、費半、台積電 ADR 漲跌）
+夜盤與美股另外用線性回歸估計「明天開盤」漲跌。
 """
 import logging
 import threading
@@ -42,6 +46,8 @@ def market_frame() -> pd.DataFrame:
     """特徵表（依最新日 K／法人／夜盤日期快取在記憶體，盤後資料沒變就不重算）。"""
     sig = tuple(db.one(q)["d"] for q in ("SELECT MAX(date) d FROM prices", "SELECT MAX(date) d FROM index_daily",
                                          "SELECT MAX(date) d FROM ml_sync", "SELECT COUNT(*) d FROM futures_daily"))
+    sig += ((db.one("SELECT MAX(date) d, COUNT(*) n FROM us_daily") or {}).get("n")
+            if db.one("SELECT name FROM sqlite_master WHERE name='us_daily'") else None,)
     if _frame_cache.get("sig") != sig:
         _frame_cache.update(sig=sig, frame=_market_frame())
     return _frame_cache["frame"].copy()
@@ -109,6 +115,10 @@ def _market_frame() -> pd.DataFrame:
     nf = night_frame()
     if len(nf):
         f = f.join(nf.reindex(f.index.union(nf.index)).shift(-1).reindex(f.index))
+    # 美股：今天以前已知的（昨晚美股）＋ 明天開盤前才知道的（今晚美股）
+    usf = us_features(f.index)
+    if len(usf):
+        f = f.join(usf)
     # 目標（明天）：收漲與否、報酬、最高／最低相對今天收盤（以 ATR 為單位）
     f["y"] = (c.shift(-1) > c).astype(float).where(c.shift(-1).notna())
     f["next_ret"] = (c.shift(-1) / c - 1) * 100
@@ -119,8 +129,66 @@ def _market_frame() -> pd.DataFrame:
     return f
 
 
+# 美股：只用「台股收盤後到下一個台股日開盤前」的那一段（昨晚以前的美股台股當天已反應，驗證後沒有幫助，不納入）
+US_NEXT = {"us_spy": "美股 S&P 500 漲跌", "us_comp": "那斯達克漲跌", "us_sox": "費城半導體漲跌", "us_tsm": "台積電 ADR 漲跌"}
+US_COL = {"spy": "SPY", "comp": "COMP", "sox": "SOX", "tsm": "TSM"}
 FEATS = list(NAMES)
 FEATS_NIGHT = FEATS + list(NIGHT)
+FEATS_US = FEATS_NIGHT + list(US_NEXT)
+ALL_NAMES = {**NAMES, **NIGHT, **US_NEXT}
+MODES = {  # 模型: (特徵, 必要欄位, 預估中心／開盤用的線性欄位)
+    "close": (FEATS, [], []),
+    "night": (FEATS_NIGHT, ["night_ret"], ["night_ret"]),
+    "us": (FEATS_US, ["night_ret", "us_sox"], ["night_ret", "us_spy", "us_sox", "us_tsm"]),
+}
+
+
+def us_closes() -> pd.DataFrame:
+    if not db.one("SELECT name FROM sqlite_master WHERE name='us_daily'"):
+        return pd.DataFrame()
+    u = pd.DataFrame(db.query("SELECT date, symbol, close FROM us_daily"))
+    if not len(u):
+        return u
+    u = u.pivot(index="date", columns="symbol", values="close")
+    u.index = pd.to_datetime(u.index)
+    return u.sort_index()
+
+
+def _us_before(us: pd.DataFrame, days: pd.DatetimeIndex) -> pd.DataFrame:
+    """每個台股日 D 開盤前已收盤的最近一個美股交易日（美股日期 < D）的收盤價。"""
+    left = pd.DataFrame({"tw": days}).sort_values("tw")
+    right = us.rename_axis("us_date").reset_index().sort_values("us_date")
+    m = pd.merge_asof(left, right, left_on="tw", right_on="us_date", allow_exact_matches=False, direction="backward")
+    return m.set_index("tw").drop(columns="us_date")
+
+
+def us_features(days: pd.DatetimeIndex) -> pd.DataFrame:
+    """美股報酬（%）：台股 D 收盤後到下一個台股日開盤前的美股漲跌（今晚美股；明早 4～5 點收盤後才知道）。
+    遇台股連假，美股多個交易日會累計起來。"""
+    us = us_closes()
+    if not len(us):
+        return pd.DataFrame()
+    at = _us_before(us, days)
+    out = pd.DataFrame(index=days)
+    for k, s in US_COL.items():
+        if s in at:
+            out[f"us_{k}"] = (at[s].shift(-1) / at[s] - 1) * 100
+    return out
+
+
+def _us_now(last_close_day: pd.Timestamp) -> dict | None:
+    """今晚美股是否已收盤（美股日期 ≥ 台股最後收盤日）→ 回傳 us_* 特徵。"""
+    us = us_closes()
+    if not len(us) or us.index[-1] < last_close_day:
+        return None
+    base = _us_before(us, pd.DatetimeIndex([last_close_day])).iloc[0]
+    last = us.iloc[-1]
+    out = {f"us_{k}": float((last[s] / base[s] - 1) * 100) for k, s in US_COL.items()
+           if s in us and pd.notna(last[s]) and pd.notna(base[s])}
+    if len(out) < len(US_NEXT):
+        return None
+    out["us_date"] = str(us.index[-1].date())
+    return out
 
 
 def night_frame() -> pd.DataFrame:
@@ -168,21 +236,42 @@ def _score(oos: pd.DataFrame) -> dict:
             "up_when_low": round(float(oos[oos["prob"] <= 0.4]["y"].mean()), 4) if (oos["prob"] <= 0.4).any() else None}
 
 
-def _band(data: pd.DataFrame, center_col: str | None) -> dict:
-    """區間：明天最高／最低相對「預估中心」的距離（ATR 為單位）的歷史分位數，並回報樣本外涵蓋率。"""
-    if center_col:
-        a, b = np.polyfit(data[center_col], data["next_ret"], 1)   # 明天漲跌 ≈ a × 夜盤漲跌 + b
-    else:
-        a, b = 0.0, 0.0
-    ctr = (a * (data[center_col] if center_col else 0) + b) / 100 * data["close"] / data["atr"]
+def _lin(data: pd.DataFrame, cols: list[str], target: str) -> tuple[np.ndarray, float]:
+    """線性：target ≈ cols · w + b（前半段估計），回傳 (係數含截距, 後半段平均絕對誤差)。"""
+    if not cols:
+        w = np.array([float(data[target].iloc[: len(data) // 2].mean())])
+        return np.r_[np.zeros(0), w], float((data[target].iloc[len(data) // 2:] - w[0]).abs().mean())
+    X = np.c_[data[cols].to_numpy(float), np.ones(len(data))]
+    y = data[target].to_numpy(float)
+    half = len(data) // 2
+    w_half = np.linalg.lstsq(X[:half], y[:half], rcond=None)[0]
+    mae = float(np.abs(y[half:] - X[half:] @ w_half).mean())
+    return np.linalg.lstsq(X, y, rcond=None)[0], mae
+
+
+def _apply(w: list[float], cols: list[str], vals: dict) -> float:
+    return float(sum(w[i] * vals[c] for i, c in enumerate(cols)) + w[-1])
+
+
+def _band(data: pd.DataFrame, cols: list[str]) -> dict:
+    """區間：明天最高／最低相對「預估中心」的距離（ATR 為單位）的歷史分位數，並回報樣本外涵蓋率。
+    預估中心 = 線性（夜盤／美股 → 明天漲跌）；預估開盤 = 線性（夜盤／美股 → 明天開盤漲跌）。"""
+    w, _ = _lin(data, cols, "next_ret")
+    w_open, open_mae = _lin(data, cols, "next_open")
+    X = np.c_[data[cols].to_numpy(float), np.ones(len(data))] if cols else np.ones((len(data), 1))
+    ctr = (X @ w) / 100 * data["close"] / data["atr"]
     hi, lo = data["next_hi_atr"] - ctr, data["next_lo_atr"] - ctr
     half = len(data) // 2
     q = lambda s, p: float(s.iloc[:half].quantile(p))
-    band = {"slope": round(float(a), 4), "intercept": round(float(b), 4), "hi50": float(hi.median()), "lo50": float(lo.median()),
+    band = {"cols": cols, "w": [round(float(v), 5) for v in w], "w_open": [round(float(v), 5) for v in w_open],
+            "open_mae": round(open_mae, 3), "hi50": float(hi.median()), "lo50": float(lo.median()),
             "hi90": float(hi.quantile(0.9)), "lo10": float(lo.quantile(0.1))}
     # 樣本外涵蓋率：用前半段的分位數，看後半段實際最高、最低落在 80% 區間內的比例
     inside = (hi.iloc[half:] <= q(hi, 0.9)) & (lo.iloc[half:] >= q(lo, 0.1))
     band["coverage80"] = round(float(inside.mean()), 4)
+    if cols:   # 開盤方向（開高／開低）的樣本外準確率
+        pred = np.c_[data[cols].to_numpy(float), np.ones(len(data))][half:] @ _lin(data.iloc[:half], cols, "next_open")[0]
+        band["open_dir_acc"] = round(float(((pred > 0) == (data["next_open"].iloc[half:] > 0)).mean()), 4)
     return band
 
 
@@ -192,16 +281,17 @@ def train() -> dict:
     try:
         f = market_frame()
         meta = {"trained_at": db.now()}
-        for key, feats, need in (("close", FEATS, []), ("night", FEATS_NIGHT, ["night_ret"])):
-            data = f.dropna(subset=["y", "next_hi_atr", "ret20", "gap60", "atr_pct"] + need)
+        for key, (feats, need, cols) in MODES.items():
+            if any(c not in f for c in need):
+                continue
+            data = f.dropna(subset=["y", "next_hi_atr", "next_open", "ret20", "gap60", "atr_pct"] + need + cols)
             oos = _walk(data, feats)
             final = _model().fit(data[feats].astype(float), data["y"].astype(int))
             final.booster_.save_model(str(_path(key)))
             imp = pd.Series(final.booster_.feature_importance("gain"), index=feats).sort_values(ascending=False)
-            names = {**NAMES, **NIGHT}
             meta[key] = {"samples": int(len(data)), "period": {"from": str(data.index[0].date()), "to": str(data.index[-1].date())},
-                         "oos": _score(oos), "band": _band(data, "night_ret" if key == "night" else None),
-                         "importance": [{"feature": names[k], "gain": round(float(v), 1)} for k, v in imp.head(10).items()]}
+                         "oos": _score(oos), "band": _band(data, cols),
+                         "importance": [{"feature": ALL_NAMES[k], "gain": round(float(v), 1)} for k, v in imp.head(10).items()]}
         db.cache_set("market_forecast_model", meta)
         return meta
     finally:
@@ -238,50 +328,56 @@ def _night_now(last_close_day: pd.Timestamp) -> dict | None:
 def predict(force: bool = False) -> dict | None:
     import lightgbm as lgb
     meta = db.cache_get("market_forecast_model")
-    if meta is None or "night" not in meta or not _path("close").exists():
+    if meta is None or "us" not in meta or not _path("us").exists():
         meta = train()
     f = market_frame()
     last = f.dropna(subset=["ret20", "gap60", "atr_pct"]).iloc[-1:]
     day = last.index[0]
     night = _night_now(day)
-    key = f"market_forecast:{day.date()}:{meta['trained_at']}:{'n' if night else 'c'}"
+    us = _us_now(day) if night else None
+    mode = "us" if us and "us" in meta else "night" if night else "close"
+    key = f"market_forecast:{day.date()}:{meta['trained_at']}:{mode}:{(us or {}).get('us_date', '')}"
     if not force and not (night and night["source"].startswith("夜盤即時")):
         hit = db.cache_get(key)
         if hit:
             return hit
-    mode = "night" if night else "close"
-    feats = FEATS_NIGHT if night else FEATS
+    feats, _, cols = MODES[mode]
     x = last[FEATS].astype(float).copy()
-    if night:
-        for k in NIGHT:
-            x[k] = night[k]
-        x = x[feats]
+    for k, v in {**(night or {}), **(us or {})}.items():
+        if k in ALL_NAMES:
+            x[k] = v
+    x = x[feats]
     bst = lgb.Booster(model_file=str(_path(mode)))
     prob = float(bst.predict(x)[0])
     contrib = bst.predict(x, pred_contrib=True)[0][:-1]       # 每個特徵把機率往上／往下推多少（log-odds）
-    names = {**NAMES, **NIGHT}
     reasons = []
     for i in np.argsort(-np.abs(contrib))[:5]:
         k, v = feats[i], x.iloc[0, i]
         if np.isnan(v) or abs(contrib[i]) < 1e-3:
             continue
-        reasons.append({"feature": names[k], "value": round(float(v), 2), "effect": "偏多" if contrib[i] > 0 else "偏空",
+        reasons.append({"feature": ALL_NAMES[k], "value": round(float(v), 2), "effect": "偏多" if contrib[i] > 0 else "偏空",
                         "weight": round(float(contrib[i]), 3)})
     m = meta[mode]
     close, atr = float(last["close"].iloc[0]), float(last["atr"].iloc[0])
     b = m["band"]
-    center = close * (1 + (b["slope"] * (night["night_ret"] if night else 0) + b["intercept"]) / 100)
+    vals = {c: float(x[c].iloc[0]) for c in cols}
+    center = close * (1 + _apply(b["w"], cols, vals) / 100)
     o = m["oos"]
     lean = "偏多" if prob >= 0.6 else "偏空" if prob <= 0.4 else "中性（接近五五波）"
     out = {
         "date": str(day.date()), "mode": mode, "close": close, "atr": round(atr, 1), "prob_up": round(prob, 4), "lean": lean,
         "center": round(center), "night": night,
+        "us": ({**{US_NEXT[k]: round(v, 2) for k, v in us.items() if k in US_NEXT}, "date": us["us_date"]} if us else None),
         "range": {"high": round(center + b["hi50"] * atr), "low": round(center + b["lo50"] * atr),
                   "high90": round(center + b["hi90"] * atr), "low10": round(center + b["lo10"] * atr),
                   "coverage80": b["coverage80"]},
         "reasons": reasons, "model": {"trained_at": meta["trained_at"], "samples": m["samples"], "period": m["period"], "oos": o},
         "confident": prob >= 0.6 or prob <= 0.4, "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if cols:
+        op = _apply(b["w_open"], cols, vals)
+        out["open"] = {"pct": round(op, 2), "price": round(close * (1 + op / 100)), "mae": b["open_mae"],
+                       "dir_acc": b.get("open_dir_acc")}
     out["note"] = (f"樣本外準確率 {o['accuracy']:.0%}（每天都猜漲是 {o['baseline']:.0%}）"
                    + (f"；機率 ≥60% 或 ≤40% 的日子準確率 {o['conf_accuracy']:.0%}（{o['conf_n']} 天）" if o["conf_accuracy"] else ""))
     db.cache_set(key, out)
@@ -292,5 +388,5 @@ if __name__ == "__main__":
     import json
     logging.basicConfig(level=logging.INFO)
     m = train()
-    print(json.dumps({k: {kk: m[k][kk] for kk in ("samples", "oos", "band")} for k in ("close", "night")}, ensure_ascii=False, indent=1))
+    print(json.dumps({k: {kk: m[k][kk] for kk in ("samples", "oos", "band")} for k in MODES if k in m}, ensure_ascii=False, indent=1))
     print(json.dumps(predict(force=True), ensure_ascii=False, indent=1))

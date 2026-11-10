@@ -60,6 +60,15 @@ def evening_scan():
     return recommender.daily_scan(fetch_fundamentals=True)
 
 
+def morning_us():
+    """美股收盤後（台灣清晨）：抓美股收盤，重算明日（今天）大盤預測（夜盤＋美股模型）。"""
+    from app.data import usmarket
+    from app.services import forecast
+    n = usmarket.sync_latest()
+    r = forecast.predict(force=True)
+    return {"us_rows": n, "mode": r and r.get("mode")}
+
+
 _catch_lock = threading.Lock()
 
 
@@ -117,6 +126,9 @@ def start() -> None:
     _sched.add_job(_safe(ml_model.train), "cron", day_of_week="sat", hour=8, minute=30, id="ml_weekly")
     from app.services import forecast
     _sched.add_job(_safe(forecast.train), "cron", day_of_week="sat", hour=9, minute=30, id="forecast_weekly")  # 每週重新訓練大盤預測  # 每週重新訓練 AI 模型
+    # 美股收盤（冬令 05:00、夏令 04:00）後抓收盤價並更新預測；台股開盤前多試兩次
+    _sched.add_job(_safe(morning_us), "cron", day_of_week="tue-sat", hour="5-8", minute="20,50", id="morning_us",
+                   misfire_grace_time=1800)
     _sched.add_job(_safe(catch_up), "interval", minutes=15, id="catch_up", misfire_grace_time=600)
     _sched.start()
     threading.Thread(target=_safe(catch_up), daemon=True).start()
@@ -125,7 +137,14 @@ def start() -> None:
     threading.Thread(target=_safe(sync.backfill), daemon=True).start()
     if not winrate.model():
         threading.Thread(target=_safe(winrate.train), daemon=True).start()
-    threading.Thread(target=_safe(forecast.predict), daemon=True).start()   # 預先算好明日大盤預測
+    def _warm_forecast():
+        from app.data import usmarket
+        if not usmarket.latest_date():
+            usmarket.backfill()          # 第一次：補 2020/9 起的美股日資料
+        else:
+            usmarket.sync_latest()
+        return forecast.predict()
+    threading.Thread(target=_safe(_warm_forecast), daemon=True).start()   # 預先算好明日大盤預測
     if ml_model.meta():  # 預先算好今日 AI 模型預測，個股頁不必等
         threading.Thread(target=_safe(ml_model.predict_today), daemon=True).start()
     if db.get_setting("fundamentals_full_pending", False):  # 上次全市場更新被中斷 → 自動接續
