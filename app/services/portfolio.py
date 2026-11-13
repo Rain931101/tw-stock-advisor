@@ -34,11 +34,36 @@ def set_cost(position_id: int, cost: float) -> None:
     db.execute("UPDATE positions SET cost=? WHERE id=?", (cost, position_id))
 
 
+def check_price(stock_id: str, price: float, day: str | None = None) -> None:
+    """成交價要落在當天的實際價格範圍內（容許 1% 誤差），避免打錯（例如 102.8 打成 12.8）。
+
+    有當天日 K 用當天最高／最低；今天盤中用即時報價；都沒有就用最近收盤 ±10%（漲跌停限制）。
+    """
+    day = day or datetime.now().date().isoformat()
+    bar = db.one("SELECT high, low FROM prices WHERE stock_id=? AND date=?", (stock_id, day))
+    lo = hi = None
+    if bar and bar["high"] and bar["low"]:
+        lo, hi, src = bar["low"], bar["high"], f"{day} 最低～最高"
+    else:
+        q = db.cache_get(f"quote:{stock_id}", 12) if day == datetime.now().date().isoformat() else None
+        if q and q.get("high") and q.get("low"):
+            lo, hi, src = q["low"], q["high"], "今天盤中最低～最高"
+        else:
+            last = db.one("SELECT close FROM prices WHERE stock_id=? AND date<=? ORDER BY date DESC LIMIT 1", (stock_id, day))
+            if last and last["close"]:
+                lo, hi, src = last["close"] * 0.9, last["close"] * 1.1, "最近收盤 ±10%（漲跌停範圍）"
+    if lo is None:
+        return
+    if not (lo * 0.99 <= price <= hi * 1.01):
+        raise ValueError(f"成交價 {price} 不在 {stock_id} {src}（{lo:g}～{hi:g}）內，請確認是否打錯")
+
+
 def confirm_buy(rec_id: int | None, stock_id: str, price: float, shares: int, buy_date: str | None = None,
                 mode: str = "cash", cost: float | None = None) -> dict:
     """記錄買進（mode：cash 現股／margin 融資）。停損一律沿用系統計畫（進場要素消失的位置），不因成交價改變。"""
     if mode not in ("cash", "margin"):
         raise ValueError("交易方式只支援現股或融資")
+    check_price(stock_id, price, buy_date)
     if mode == "margin" and shares % 1000:
         raise ValueError("融資必須以整張（1000 股）買進")
     plan, name, setup = {}, None, "manual"

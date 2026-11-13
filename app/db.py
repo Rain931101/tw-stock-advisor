@@ -6,6 +6,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 from app.config import get_settings
@@ -188,6 +189,46 @@ def upsert_prices(rows: list[tuple]) -> None:
         )
 
 
+BREAK_DOWN, BREAK_UP = 0.75, 1.35   # 一天跳動超過 ±10% 漲跌幅很多 → 分割、面額變更、減資等公司行動
+
+
+def split_adjust(df: pd.DataFrame, by: str | None = None) -> pd.DataFrame:
+    """還原分割／減資造成的價格斷層（例如 0050 在 2025-06-18 一拆四：188.65 → 47.57）。
+
+    只調整「斷層之前」的價格（乘上 當天開盤 ÷ 前一日收盤）與成交量（反向），斷層之後的價格維持實際成交價，
+    所以現在的股價、持股成本都不受影響，只是均線、型態、圖表不會被假跳空扭曲。
+    一般除息不調整（缺口小，講義的技術分析也以實際價格判斷）。by：多檔資料時的股票欄位。
+    """
+    if df.empty:
+        return df
+    groups = [(None, df)] if by is None else df.groupby(by, sort=False)
+    parts = []
+    for _, g in groups:
+        c = g["close"].to_numpy(float)
+        o = g["open"].to_numpy(float)
+        if len(c) < 2:
+            parts.append(g)
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = c[1:] / c[:-1]
+        brk = np.where((ratio < BREAK_DOWN) | (ratio > BREAK_UP))[0] + 1
+        if not len(brk):
+            parts.append(g)
+            continue
+        factor = np.ones(len(c))
+        for i in brk[::-1]:
+            r = o[i] / c[i - 1] if o[i] and c[i - 1] else None
+            if r and 0.02 < r < 50:
+                factor[:i] *= r
+        g = g.copy()
+        for k in ("open", "high", "low", "close"):
+            g[k] = g[k].to_numpy(float) * factor
+        if "volume" in g:
+            g["volume"] = g["volume"].to_numpy(float) / factor
+        parts.append(g)
+    return parts[0] if by is None else pd.concat(parts)
+
+
 def load_prices(stock_id: str, limit: int = 400) -> pd.DataFrame:
     with reading() as c:
         df = pd.read_sql_query(
@@ -195,18 +236,19 @@ def load_prices(stock_id: str, limit: int = 400) -> pd.DataFrame:
             c,
             params=(stock_id, limit),
         )
-    df = df.iloc[::-1].reset_index(drop=True)
+    df = split_adjust(df.iloc[::-1].reset_index(drop=True))
     df["date"] = pd.to_datetime(df["date"])
     return df.set_index("date")
 
 
-def load_all_prices(since: str) -> pd.DataFrame:
+def load_all_prices(since: str, adjust: bool = True) -> pd.DataFrame:
     with reading() as c:
-        return pd.read_sql_query(
+        df = pd.read_sql_query(
             "SELECT stock_id, date, open, high, low, close, volume, value FROM prices WHERE date>=? ORDER BY stock_id, date",
             c,
             params=(since,),
         )
+    return split_adjust(df, by="stock_id") if adjust else df
 
 
 def _default(o):

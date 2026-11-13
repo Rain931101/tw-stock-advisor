@@ -246,7 +246,7 @@ _today_cache: dict = {}
 def today_features() -> dict[str, dict[str, bool]]:
     """最新交易日每檔股票的條件（含市場、族群），每日快取一次。"""
     last = db.one("SELECT MAX(date) AS d FROM prices")["d"]
-    hit = db.cache_get(f"winrate_today:v2:{last}")
+    hit = db.cache_get(f"winrate_today:v3:{last}")
     if hit:
         return hit
     panel, industry = _panel(0, 0, days=260)
@@ -260,7 +260,7 @@ def today_features() -> dict[str, dict[str, bool]]:
         row = f.iloc[-1]
         if row["_valid"]:
             out[sid] = {k: bool(row[k]) for k in F.FEATURES}
-    db.cache_set(f"winrate_today:v2:{last}", out)
+    db.cache_set(f"winrate_today:v3:{last}", out)
     return out
 
 

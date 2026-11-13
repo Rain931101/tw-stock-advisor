@@ -248,7 +248,7 @@ def test_reconcile_with_broker_cost_and_realized(monkeypatch):
     db.execute("INSERT INTO stocks VALUES ('0050','元大台灣50','twse','ETF')")
     db.upsert_prices([("0050", d.date().isoformat(), 99.7, 99.7, 99.7, 99.7, 2000, 0)
                       for d in pd.bdate_range("2026-01-01", periods=80)])
-    pid = portfolio.confirm_buy(None, "0050", price=92.21, shares=350, buy_date="2026-01-01", cost=32274)["id"]
+    pid = portfolio.confirm_buy(None, "0050", price=92.21, shares=350, buy_date="2025-12-01", cost=32274)["id"]
     portfolio.record_sell(pid, price=97.85, shares=150)
     client = TestClient(main.app)
     # 元大：分批買進，剩 200 股成本 18,561、已實現 946
@@ -257,6 +257,26 @@ def test_reconcile_with_broker_cost_and_realized(monkeypatch):
     pos = h["positions"][0]
     assert pos["cost"] == 18561 and pos["pnl"] == 1332 and pos["break_even"] == 93.05
     assert h["summary"]["realized_pnl"] == 946
+
+
+def test_buy_price_typo_is_rejected():
+    from app.services import portfolio
+
+    db.reset_for_tests()
+    db.execute("INSERT INTO stocks VALUES ('0050','元大台灣50','twse','ETF')")
+    db.upsert_prices([("0050", "2026-11-13", 102.85, 104.4, 102.1, 102.8, 2000, 0)])
+    with pytest.raises(ValueError, match="打錯"):
+        portfolio.confirm_buy(None, "0050", price=12.8, shares=50, buy_date="2026-11-13")
+    assert portfolio.confirm_buy(None, "0050", price=102.8, shares=50, buy_date="2026-11-13")["id"]
+
+
+def test_split_adjust_only_changes_prices_before_split():
+    df = pd.DataFrame({"open": [188.0, 188.65, 47.5, 47.6], "high": [189.0, 189.0, 48.0, 48.0], "low": [187.0, 188.0, 47.0, 47.0],
+                       "close": [188.0, 188.65, 47.57, 47.1], "volume": [100.0, 100.0, 400.0, 400.0]})
+    a = db.split_adjust(df)
+    assert a["close"].iloc[2:].tolist() == [47.57, 47.1]               # 分割後維持實際價格
+    assert a["close"].iloc[1] == pytest.approx(47.5)                    # 分割前 ÷ 約 4
+    assert a["volume"].iloc[0] == pytest.approx(100 * 188.65 / 47.5)    # 成交量反向調整
 
 
 def test_max_loss_above_position_size_does_not_block_everything():
